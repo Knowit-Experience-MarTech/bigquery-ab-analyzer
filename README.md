@@ -170,4 +170,4 @@ This doesn't mean the test failed! It means that, based on the current data, the
 * **Cost control**: No BigQuery cost surprises
 * **Doesn’t try to replace** managed experimentation platforms - just complements them
 
-Solution by [**Eivind Savio**](https://www.savio.no/analytics/bigquery-ab-analyzer) from [**Knowit AI & Analytics**](https://www.knowit.no/). Not officially supported by Knowit AI & Analytics.
+Solution by [**Eivind Savio**](https://www.savio.no/analytics/bigquery-ab-analyzer) from [**Knowit AI & Analytics**](https://www.knowit.no/hva-vi-tilbyr/merkevare-og-markedsforing/maling-og-dataanalyse/). Not officially supported by Knowit AI & Analytics.

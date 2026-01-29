@@ -16,9 +16,9 @@
 
  ----------------------------------------------------------------------------------------------------------------------------
 	-- Replace "your_project" with your project
-  -- Replace "mixpanel" with your data set
+	-- Replace "mixpanel" with your data set
 
-  -- CHECK REGION: Replace 'region-eu' with 'region-us' if your data is in US
+	-- CHECK REGION: Replace 'region-eu' with 'region-us' if your data is in US
 ----------------------------------------------------------------------------------------------------------------------------
 
 begin

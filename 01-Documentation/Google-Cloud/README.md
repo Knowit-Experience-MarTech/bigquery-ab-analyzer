@@ -19,19 +19,23 @@
 		2. Refresh Parameters
 3. Run the [**Create-Tables-and-UDF.sql**](../Google-Cloud/01-BigQuery/Create-Tables-and-UDF.sql) in BigQuery. This will create **5** tables and **9** User Defined Functions. When you run your analyzis later on, there will also be created some staging tables. Staging tables will come and go. They expires after 24 hours.
     1. Replace **your_project** with the name of your project.
-    2. Replace **analytics_XXX** with your GA4 data set.
-    3. Region: As default **EU** is set as region. Change this to **US** if that is correct for you.
-4. **Copy the scheduled query:**
+    2. Region: As default **EU** is set as region. Change this to **US** if that is correct for you.
+4. **Copy the scheduled query relevant to you:**
 	1. [Google Analytics 4 scheduled query](../Google-Cloud/01-BigQuery/01-Scheduled-queries/01_GA4/bigquery_ab_analyzer_ga4.sql).
 		1. Replace **your_project** with the name of your project.
 		2. Replace **analytics_XXX** with your GA4 data set.
 	2. [GA4 Dataform scheduled query](../Google-Cloud/01-BigQuery/01-Scheduled-queries/02_GA4_Dataform/bigquery_ab_analyzer_ga4_dataform.sql).
 		1. Replace **your_project** with the name of your project.
 		2. Replace **analytics_XXX** with your GA4 data set.
+		3. Replace 'region-eu' with 'region-us' if your data is in US.
 	3. [Amplitude scheduled query](../Google-Cloud/01-BigQuery/01-Scheduled-queries/03_Amplitude/bigquery_ab_analyzer_amplitude.sql).
 		1. In **declare events_table**, replace **your_project.your_dataset.deduplicated_EVENTS_1234** with your project, data set and deduplicated table function.
 		2. Replace **your_project** with the name of your project.
-	4. **Common settings for GA4 and Amplitude:**
+		3. Replace 'region-eu' with 'region-us' if your data is in US.
+	4. [Mixpanel scheduled query](../Google-Cloud/01-BigQuery/01-Scheduled-queries/04_Mixpanel/bigquery_ab_analyzer_mixpanel.sql).
+		1. In **declare events_table**, replace **your-project.mixpanel** with your project and data set.
+		2. Replace 'region-eu' with 'region-us' if your data is in US.
+	5. **Common settings for GA4, Amplitude & Mixpanel:**
 		1. Go to [**Scheduled queries**](https://console.cloud.google.com/bigquery/scheduled-queries) and **Create scheduled query in editor**.
 			1. If you have changed suggested names for **data set** and **tables** in **Settings Sheet**, you must also replace these.
 			2. **Name the scheduled query:** Ex. "bigquery_ab_analyzer"
