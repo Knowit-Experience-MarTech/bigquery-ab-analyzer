@@ -145,7 +145,7 @@ This solution is a statistical analysis engine, not a traffic splitting tool.
 **Technically, yes, but proceed with caution**. Because this framework uses a **Fixed-Horizon** Frequentist model (Z-test), looking at the results daily and stopping the moment you see "Significant" increases the risk of a **False Positive** ([Type 1 error](https://en.wikipedia.org/wiki/Type_I_and_type_II_errors)). If you need to make a decision early, ensure you have reached your **Minimum Detectable Effect (MDE)** or a sufficient sample size first.
 
 ### 10.2. How do I know when the sample size is "enough"?
-Statistical significance alone isn't a "stop" sign. You should define your target sample size before the test begins.
+Statistical significance alone isn't a "stop" sign. You should define your target sample size before you run the analysis.
 
 * **Small changes** require many users.
 * **Big changes** (e.g., a completely new UI) require fewer. This solution provides the mathematical confidence, but we recommend using a "Fixed Horizon". “Fixed horizon” means either a specific sample size or a specific duration.
@@ -158,6 +158,10 @@ This doesn't mean the test failed! It means that, based on the current data, the
 
 * Continue the test to gather more data (if you haven't reached your sample size).
 * Declare a "Draw" and move on to the next hypothesis.
+
+### 10.5. Can other tools be supported?
+If the tool is having the same event data model as the already supported tools, and can export data to BigQuery, the tool can probably be supported.
+However, since the BigQuery schema will be different, the [**scheduled query**](01-Documentation/Google-Cloud/01-BigQuery/01-Scheduled-queries) and the [**04_BigQuery_Download.gs**](01-Documentation/Google-Sheet/Apps-Script/04_BigQuery_Download.gs) Apps Script have to be adapted to the tool.
 
 ## 11. Summary of Benefits
 
