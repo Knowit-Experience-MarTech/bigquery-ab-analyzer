@@ -80,7 +80,7 @@ This solution allows you to toggle between three distinct counting methods:
 	
 #### Why this distinction is critical
 
-If you only measure "Did they click?" (Option 1), you might miss a huge win.
+If you only measure "Did they click?", you might miss a huge win.
 
 * **Scenario**: Variant A and Variant B both have 50% of users clicking "Play".
 	* *Standard Tool Result*: "No Difference".
