@@ -17,7 +17,7 @@
 	2. Go to the menu **BigQuery A/B Analyzer** -> **Get Data from BigQuery**
 		1. Refresh Events
 		2. Refresh Parameters
-3. Run the [**Create-Tables-and-UDF.sql**](../Google-Cloud/01-BigQuery/Create-Tables-and-UDF.sql) in BigQuery. This will create **5** tables and **9** User Defined Functions. When you run your analyzis later on, there will also be created some staging tables. Staging tables will come and go. They expires after 24 hours.
+3. Run the [**Create-Tables-and-UDF.sql**](../Google-Cloud/01-BigQuery/Create-Tables-and-UDF.sql) in BigQuery. This will create **6** tables and **9** User Defined Functions. When you run your analyzis later on, there will also be created some staging tables. Staging tables will come and go. They expires after 24 hours.
     1. Replace **your_project** with the name of your project.
     2. Region: As default **EU** is set as region. Change this to **US** if that is correct for you.
 4. **Copy the scheduled query relevant to you:**
