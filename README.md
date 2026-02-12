@@ -8,7 +8,7 @@ The **BigQuery A/B Analyzer** decouples experiment definition from execution. It
 
 The framework supports the following tools/solutions:
 * [Google Analytics](https://marketingplatform.google.com/about/analytics/) (GA4)
-	* [GA4 Dataform](https://ga4dataform.com/)
+	* [GA4Dataform](https://ga4dataform.com/)
 	* [Firebase](https://firebase.google.com/docs/ab-testing)
 * [Amplitude](https://www.amplitude.com/)
 * [Mixpanel](https://mixpanel.com/home/)
