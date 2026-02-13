@@ -9,7 +9,7 @@
 			1. **Data Set Location**: As default it is set to **EU**. Change it to **US** if that is correct for you.
 			2. **Project ID**: Insert your Google Cloud Project ID here.
 		2. **Download data to Sheet Settings**
-			1. **Analytics Tool**: Google Analytics, GA4 Dataform or Amplitude.
+			1. **Analytics Tool**: Google Analytics, GA4Dataform or Amplitude.
 			2. **BigQuery Data Set ID**: BigQuery Data Set ID for your analytics tool. Ex. analytics_12345.
 			3. **BigQuery Table ID**: Not relevant for GA4.
 		3. It's recommended to leave the other settings as is for simplicity.
@@ -24,7 +24,7 @@
 	1. [**Google Analytics 4** scheduled query](../Google-Cloud/01-BigQuery/01-Scheduled-queries/bigquery_ab_analyzer_ga4.sql).
 		1. Replace **your_project** with the name of your project.
 		2. Replace **analytics_XXX** with your GA4 data set.
-	2. [**GA4 Dataform** scheduled query](../Google-Cloud/01-BigQuery/01-Scheduled-queries/bigquery_ab_analyzer_ga4_dataform.sql).
+	2. [**GA4Dataform** scheduled query](../Google-Cloud/01-BigQuery/01-Scheduled-queries/bigquery_ab_analyzer_ga4_dataform.sql).
 		1. Replace **your_project** with the name of your project.
 		2. Replace **analytics_XXX** with your GA4 data set.
 		3. Replace 'region-eu' with 'region-us' if your data is in US.
