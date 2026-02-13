@@ -8,8 +8,10 @@ The **BigQuery A/B Analyzer** decouples experiment definition from execution. It
 
 The framework supports the following tools/solutions:
 * [Google Analytics](https://marketingplatform.google.com/about/analytics/) (GA4)
-	* [GA4Dataform](https://ga4dataform.com/)
-	* [Firebase](https://firebase.google.com/docs/ab-testing)
+	* [GA4Dataform](https://ga4dataform.com/) by Superform Labs
+ 		* Flattened GA4 tables that are faster and more affordable to query.
+	* [Firebase](https://firebase.google.com/docs/ab-testing/bigquery)
+ 		* Supports Firebase experiment structure in BigQuery.
 * [Amplitude](https://www.amplitude.com/)
 * [Mixpanel](https://mixpanel.com/home/)
 
@@ -43,7 +45,7 @@ The Filters feature allows you to move beyond monolithic data by isolating speci
 
 * **Segmented Analysis**: Zoom in on specific audiences by including or excluding users based on device, geography, or traffic source (e.g., "Only count Mobile users").
 * **Nested Ecommerce Deep-Dives**: You can filter by eg. <code>items.item_id</code>, <code>items.item_category</code>, or <code>items.item_brand</code> to see if a variant specifically boosted the conversion rate of a particular product or category. 
-	* Only available for GA4 & GA4 Dataform.
+	* Only available for **GA4** & **GA4Dataform**.
 * **Flexible Logic**: Supports both Event and User scopes, utilizing Regex for sophisticated matching (e.g., "Exclude customer type A" or "Include only specific sub-domains").
 * **No Re-Coding Necessary**: Stakeholders can pivot from a site-wide analysis to a product-specific deep dive instantly, simply by updating a row in the configuration.
 
@@ -170,7 +172,7 @@ However, since the BigQuery schema will be different, the [**scheduled query**](
 * **Scalable execution**: Analyze many experiments without rewriting queries
 * **Flexible metrics**: Conversion, session rates, event intensity, continuous values
 * **Better data hygiene**: Overlap handling + filters built in
-* **Works with your stack**: GA4, GA4 Dataform, Firebase, Amplitude, Mixpanel
+* **Works with your stack**: GA4, GA4Dataform, Firebase, Amplitude, Mixpanel
 * **Cost control**: No BigQuery cost surprises
 * **Doesn’t try to replace** managed experimentation platforms - just complements them
 
