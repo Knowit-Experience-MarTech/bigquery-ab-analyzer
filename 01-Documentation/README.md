@@ -14,11 +14,21 @@ The **BigQuery A/B Analyzer** is a tool that allows you to define, manage, and a
 This tool uses a manual "sync" model to give you control over costs and timing. It does not update automatically in the background.
 
 ### Step A: Refresh Metadata
+
 To see the latest event names and parameters in your dropdown menus, you must pull metadata from BigQuery.
 
 1. Click the menu 📈 **BigQuery A/B Analyzer** at the top.
 2. Select **Get Data from BigQuery > Refresh Events**.
 3. Select **Get Data from BigQuery > Refresh Parameters**.
+
+Wait for the "toast" notification at the bottom right confirming success.
+
+### Step A: Export AI Summary Settings to BigQuery
+
+1. You turn **AI Summary** on and off in **Settings** tab.
+2. The **AI Prompt** instructs how Gemini should interpret the result.
+3. If you activated **AI Summary**, click the menu 📈 **BigQuery A/B Analyzer** at the top.
+4. Select **Settings > Export AI Summary Settings**.
 
 Wait for the "toast" notification at the bottom right confirming success.
 

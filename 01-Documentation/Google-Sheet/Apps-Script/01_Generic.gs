@@ -22,6 +22,8 @@ function onOpen() {
     .addSubMenu(ui.createMenu('Get Data from BigQuery')
       .addItem('Refresh Events', 'refreshEvents')
       .addItem('Refresh Parameters', 'refreshParameters'))
+    .addSubMenu(ui.createMenu('Settings')
+      .addItem('Export AI Summary Settings', 'exportSettingsToBigQuery'))
     .addSubMenu(ui.createMenu('Advanced Filters')
       .addItem('Open Filters Sheet', 'openFiltersSheet')
       .addItem('Backfill missing Advanced Filter rows', 'backfillAllAdvanced'))
@@ -33,6 +35,7 @@ function onOpen() {
 
 const experimentSheetName = "Experiments";
 const filtersSheetName = "Filters";
+const calculatorSheetName = "Calculator";
 const queryInfoSheetName = "Query Info";
 const settingsSheetName = "Settings";
 
@@ -66,13 +69,14 @@ const idColumn = 1,                         // Column A - idColumn
   experimentVariantParameterColumn = 26,    // Column Z - Experiment Variant String used in BQ
   experimentEventValueParameterColumn = 27, // Column AA - Experiment Value used in BQ
   userOverlapColumn = 28,                   // Column AB - User Overlap
-  linksColumn = 29,                         // Column AC - Links
-  imagesColumn = 30,                        // Column AD - Images
-  editExperimentColumn = 31;                // Column AE - Edit Experiment
+  aiTotalSampleSize = 29,                   // Column AC - User Overlap
+  linksColumn = 30,                         // Column AD - Links
+  imagesColumn = 31,                        // Column AE - Images
+  editExperimentColumn = 32;                // Column AF - Edit Experiment
 
 function applyMergesForBlock(startRow) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const sheet = ss.getActiveSheet();
+  const sheet = ss.getSheetByName(experimentSheetName);
 
   sheet.getRange(firstRow, idColumn, 2, 1).merge();
   sheet.getRange(firstRow, dateStartColumn, 2, 1).merge();
@@ -100,6 +104,7 @@ function applyMergesForBlock(startRow) {
   sheet.getRange(firstRow, experimentVariantParameterColumn, 2, 1).merge();
   sheet.getRange(firstRow, experimentEventValueParameterColumn, 2, 1).merge();
   sheet.getRange(firstRow, userOverlapColumn, 2, 1).merge();
+  sheet.getRange(firstRow, aiTotalSampleSize, 2, 1).merge();
   sheet.getRange(firstRow, linksColumn, 2, 1).merge();
   sheet.getRange(firstRow, editExperimentColumn, 2, 1).merge();
 }
@@ -107,6 +112,9 @@ function applyMergesForBlock(startRow) {
 /**
  * Builds a data validation rule pointing to the named range "DropdownLookupEvents".
  * Shows a dropdown and disallows invalid values.
+ */
+/**
+ * Builds a data validation rule pointing to the named range "DropdownLookupEvents".
  */
 function getEventsDropdownRule() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
@@ -122,7 +130,6 @@ function getEventsDropdownRule() {
 
 /**
  * Builds a data validation rule pointing to the named range "DropdownLookupExperimentEvents".
- * Shows a dropdown and disallows invalid values.
  */
 function getExperimentEventsDropdownRule() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
@@ -244,7 +251,7 @@ function applyFilterFieldDropdownForBlock(sheet, topRow) {
 
 function insertRowsAndMerge() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const sheet = ss.getActiveSheet();
+  const sheet = ss.getSheetByName(experimentSheetName);
 
   const lastRow = sheet.getLastRow();
 
@@ -357,6 +364,7 @@ function insertRowsAndMerge() {
   sheet.getRange(firstRow, identitySourceColumn).setValue("DEVICE_ID");
   sheet.getRange(firstRow, variantSettingsColumn).setValue("Same");
   sheet.getRange(firstRow, userOverlapColumn).setValue("Exclude");
+  sheet.getRange(firstRow, aiTotalSampleSize).setValue(ss.getRangeByName("SettingsAITotalSampleSize").getValue());
 
   // 5) Insert a checkbox into merged Column editExperimentColumn
   const mergedM = sheet.getRange(firstRow, editExperimentColumn);
@@ -488,268 +496,269 @@ function getStoredFilterDropdown_(sheet, topRow) {
 }
 
 function onEdit(e) {
+  // Always a good practice to ensure the event object exists
+  if (!e || !e.range) return; 
+
   const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const sheet = ss.getActiveSheet();
+  const sheet = e.range.getSheet();
+  const sheetName = sheet.getName();
   const editedRange = e.range;
   const editedRow = editedRange.getRow();
   const editedCol = editedRange.getColumn();
 
-    // --- Lock Filter dropdown (filterColumn) when Advanced Filters is ON ---
-  if (editedRow >= firstRow && editedCol === filterColumn) {
-    var topRowLock = getExperimentBlockTopRow_(editedRow);
-    var advOn = !!sheet.getRange(topRowLock, filterAdvancedColumn).getValue();
-
-    if (advOn) {
-      // Try stored snapshot; fall back to oldValue; fall back to current "Yes"
-      var prev = getStoredFilterDropdown_(sheet, topRowLock);
-      if (prev === null || typeof prev === 'undefined') {
-        if (typeof e.oldValue !== 'undefined') prev = e.oldValue;
-        else prev = 'Yes';
-      }
-
-      // filterColumn is merged → set value in the top cell
-      sheet.getRange(topRowLock, filterColumn).setValue(prev);
-
-      SpreadsheetApp.getActive().toast(
-        'Advanced Filters is ON — turn it OFF before changing "Filter".',
-        'Advanced Filters',
-        5
-      );
-      return;
-    } else {
-      // Advanced is OFF → keep snapshot updated
-      storeFilterDropdownSnapshotForBlock_(sheet, topRowLock);
-      // do not return
+  // ==========================================
+  // 1. SETTINGS SHEET ROUTER
+  // ==========================================
+  const settingsCell = ss.getRangeByName('SettingsAnalyticsTool');
+  if (settingsCell && sheetName === settingsCell.getSheet().getName()) {
+    const inRow = editedRow >= settingsCell.getRow() && editedRow <= settingsCell.getLastRow();
+    const inCol = editedCol >= settingsCell.getColumn() && editedCol <= settingsCell.getLastColumn();
+    
+    if (inRow && inCol) {
+      updateAnalyticsToolText(e);
+      return; // Handled settings, exit early
     }
   }
 
-  // --- Sheet router: handle Filters sheet separately and exit early
-  if (sheet.getName() === filtersSheetName) {
+  // ==========================================
+  // 2. FILTERS SHEET ROUTER
+  // ==========================================
+  if (sheetName === filtersSheetName) {
     // React when Filter Scope (col 6) changes on real data rows
-    if (editedRow >= filtersDataStartRow && editedCol === 6 && typeof filtersApplyFilterFieldDropdownForRow === 'function') {
+    // (Assumes filtersDataStartRow is defined globally elsewhere in your script)
+    if (typeof filtersDataStartRow !== 'undefined' && editedRow >= filtersDataStartRow && editedCol === 6 && typeof filtersApplyFilterFieldDropdownForRow === 'function') {
       filtersApplyFilterFieldDropdownForRow(sheet, editedRow);
     }
     return; // IMPORTANT: don't execute Experiments logic on the Filters sheet
   }
 
-  if (editedRow >= firstRow && (editedCol === dateStartColumn || editedCol === dateEndColumn)) {
-    const v = editedRange.getValue();
-    if (v instanceof Date) {
-      const norm = new Date(v.getFullYear(), v.getMonth(), v.getDate());
-      editedRange.setValue(norm).setNumberFormat("yyyy-MM-dd");
+  // ==========================================
+  // 3. EXPERIMENTS SHEET ROUTER (The Core Fix)
+  // ==========================================
+  if (sheetName === experimentSheetName) {
+
+    // --- Case 1: Show/Hide columns dropdown ---
+    const advRange = ss.getRangeByName("ExperimentsAdvSettingsShowHide");
+    if (advRange && editedRange.getA1Notation() === advRange.getA1Notation()) {
+      const dropdownValue = editedRange.getValue();
+      if (dropdownValue === "Hide") {
+        sheet.hideColumns(scopeColumn, 11);
+      } else if (dropdownValue === "Show") {
+        sheet.showColumns(scopeColumn, 11);
+      }
+      return;
     }
-    // don't return; let other handlers run if needed
-  }
 
-  // --- Case: Toggle date merge when dateComparisonColumn checkbox is edited ---
-  if (editedCol === dateComparisonColumn && editedRow >= firstRow) {
-    const row = editedRow;
-    const topRow = ((row - firstRow) % 2 === 0) ? row : row - 1;
+    // All subsequent checks only matter if we are below the header rows
+    if (editedRow < firstRow) return;
 
-    const isChecked = !!editedRange.getValue(); // TRUE = unmerge
-    setDateMergeForBlock(sheet, topRow, /* shouldMerge */ !isChecked);
+    // --- Lock Filter dropdown (filterColumn) when Advanced Filters is ON ---
+    if (editedCol === filterColumn) {
+      var topRowLock = getExperimentBlockTopRow_(editedRow);
+      var advOn = !!sheet.getRange(topRowLock, filterAdvancedColumn).getValue();
 
-    // Color only the date columns (B & C) according to the state
-    colorDatesForBlock(sheet, topRow, isChecked);
-
-    return;
-  }
-
-  // If Identity Source changed, update scope rule for this 2-row block
-  if (editedCol === identitySourceColumn && editedRow >= firstRow) {
-    const row = editedRow;
-    const topRow = ((row - firstRow) % 2 === 0) ? row : row - 1;
-    enforceScopeForIdentitySource(sheet, topRow);
-    return; // handled
-  }
- 
-  // --- Case 1: Check if the edited cell is the dropdown to show/hide columns ---
-  const advRange = ss.getRangeByName("ExperimentsAdvSettingsShowHide");
-  if (advRange && editedRange.getA1Notation() === advRange.getA1Notation()) {
-    const dropdownValue = editedRange.getValue();
-    if (dropdownValue === "Hide") {
-      sheet.hideColumns(scopeColumn, 11);
-    } else if (dropdownValue === "Show") {
-      sheet.showColumns(scopeColumn, 11);
-    }
-    return;
-  }
-
-  // --- Case 2: Generate Variant String ---
-  // Trigger when editing either experimentNameColumn or variantNameColumn
-  if (editedCol === experimentNameColumn || editedCol === variantNameColumn) {
-    // Check if automatic generation is enabled
-    const genSetting = ss.getRangeByName("SettingsGenerateExpVariantString").getValue();
-    if (String(genSetting).toLowerCase() === "yes") {
-      let parts = [];
-      const toolNameInclude = ss.getRangeByName("SettingsToolNameInclude").getValue();
-      const divider = ss.getRangeByName("SettingsDivider").getValue();
-      if (String(toolNameInclude).toLowerCase() === "yes") {
-        const toolName = ss.getRangeByName("SettingsToolName").getValue();
-        if (toolName !== "" && toolName !== null) {
-          parts.push(toolName);
+      if (advOn) {
+        var prev = getStoredFilterDropdown_(sheet, topRowLock);
+        if (prev === null || typeof prev === 'undefined') {
+          prev = (typeof e.oldValue !== 'undefined') ? e.oldValue : 'Yes';
         }
-      }
-      // For Column experimentNameColumn (merged) we always get the top cell of the 2-row block.
-      const row = editedRow;
-      const topRow = ((row - firstRow) % 2 === 0) ? row : row - 1;
-      const valueD = sheet.getRange(topRow, experimentNameColumn).getValue();
-      if (valueD !== "" && valueD !== null) {
-        parts.push(valueD);
-      }
-      // For Column E (unmerged), we get the value from the edited row.
-      const valueE = sheet.getRange(row, variantNameColumn).getValue();
-      if (valueE !== "" && valueE !== null) {
-        parts.push(valueE);
-      }
-      const result = parts.join(divider);
-      sheet.getRange(row, experimentVariantParameterColumn).setValue(result);
-    }
-  }
-  
-  // --- Case 3: Handle dropdown in filterColumn for formatting columns
-  if (editedCol === filterColumn && editedRow >= firstRow) {
-    const topRow = ((editedRow - firstRow) % 2 === 0) ? editedRow : editedRow - 1;
 
-    const turnedOn = String(e.range.getValue() || '').toLowerCase() === 'yes';
-    if (turnedOn) {
-      // Force default Scope = "Event" when filtering is activated
-      const variantSetting = String(sheet.getRange(topRow, variantSettingsColumn).getValue() || 'Same');
-      const isDifferent = (variantSetting === 'Different');
-
-      // Apply to top row; if Different, also apply to bottom row
-      sheet.getRange(topRow, filterScopeColumn).setValue('Event');
-      if (isDifferent) {
-        sheet.getRange(topRow + 1, filterScopeColumn).setValue('Event');
+        sheet.getRange(topRowLock, filterColumn).setValue(prev);
+        ss.toast('Advanced Filters is ON — turn it OFF before changing "Filter".', 'Advanced Filters', 5);
+        return;
+      } else {
+        storeFilterDropdownSnapshotForBlock_(sheet, topRowLock);
       }
     }
 
-    // Apply/refresh the rest of the filter UI
-    enforceFilterForBlock(sheet, topRow);
+    // --- Date Normalization ---
+    if (editedCol === dateStartColumn || editedCol === dateEndColumn) {
+      const v = editedRange.getValue();
+      if (v instanceof Date) {
+        const norm = new Date(v.getFullYear(), v.getMonth(), v.getDate());
+        editedRange.setValue(norm).setNumberFormat("yyyy-MM-dd");
+      }
+    }
 
-    // After enforcing, (re)bind the Field dropdown(s) to the chosen Scope(s)
-    // This ensures the Field list appears immediately after setting "Event".
-    if (typeof applyFilterFieldDropdownForBlock === 'function') {
+    // --- Toggle date merge when dateComparisonColumn checkbox is edited ---
+    if (editedCol === dateComparisonColumn) {
+      const topRow = ((editedRow - firstRow) % 2 === 0) ? editedRow : editedRow - 1;
+      const isChecked = !!editedRange.getValue(); // TRUE = unmerge
+      
+      setDateMergeForBlock(sheet, topRow, !isChecked);
+      colorDatesForBlock(sheet, topRow, isChecked);
+      return;
+    }
+
+    // --- Identity Source Update ---
+    if (editedCol === identitySourceColumn) {
+      const topRow = ((editedRow - firstRow) % 2 === 0) ? editedRow : editedRow - 1;
+      enforceScopeForIdentitySource(sheet, topRow);
+      return; 
+    }
+
+    // --- Generate Variant String ---
+    if (editedCol === experimentNameColumn || editedCol === variantNameColumn) {
+      const genSetting = ss.getRangeByName("SettingsGenerateExpVariantString").getValue();
+      if (String(genSetting).toLowerCase() === "yes") {
+        let parts = [];
+        const toolNameInclude = ss.getRangeByName("SettingsToolNameInclude").getValue();
+        const divider = ss.getRangeByName("SettingsDivider").getValue();
+        
+        if (String(toolNameInclude).toLowerCase() === "yes") {
+          const toolName = ss.getRangeByName("SettingsToolName").getValue();
+          if (toolName !== "" && toolName !== null) parts.push(toolName);
+        }
+        
+        const topRow = ((editedRow - firstRow) % 2 === 0) ? editedRow : editedRow - 1;
+        const valueD = sheet.getRange(topRow, experimentNameColumn).getValue();
+        if (valueD !== "" && valueD !== null) parts.push(valueD);
+        
+        const valueE = sheet.getRange(editedRow, variantNameColumn).getValue();
+        if (valueE !== "" && valueE !== null) parts.push(valueE);
+        
+        sheet.getRange(editedRow, experimentVariantParameterColumn).setValue(parts.join(divider));
+      }
+    }
+
+    // --- Handle dropdown in filterColumn for formatting columns ---
+    if (editedCol === filterColumn) {
+      const topRow = ((editedRow - firstRow) % 2 === 0) ? editedRow : editedRow - 1;
+      const turnedOn = String(e.range.getValue() || '').toLowerCase() === 'yes';
+      
+      if (turnedOn) {
+        const variantSetting = String(sheet.getRange(topRow, variantSettingsColumn).getValue() || 'Same');
+        const isDifferent = (variantSetting === 'Different');
+
+        sheet.getRange(topRow, filterScopeColumn).setValue('Event');
+        if (isDifferent) sheet.getRange(topRow + 1, filterScopeColumn).setValue('Event');
+      }
+
+      enforceFilterForBlock(sheet, topRow);
+      if (typeof applyFilterFieldDropdownForBlock === 'function') applyFilterFieldDropdownForBlock(sheet, topRow);
+      return;
+    }
+
+    // --- Refresh Field dropdown when Filter Scope changes ---
+    if (editedCol === filterScopeColumn) {
+      const topRow = ((editedRow - firstRow) % 2 === 0) ? editedRow : editedRow - 1;
       applyFilterFieldDropdownForBlock(sheet, topRow);
-    }
-    return;
-  }
-
-  // When the user changes Filter Scope, refresh the Field dropdown(s) for that block
-  if (editedCol === filterScopeColumn && editedRow >= firstRow) {
-    const topRow = ((editedRow - firstRow) % 2 === 0) ? editedRow : editedRow - 1;
-    applyFilterFieldDropdownForBlock(sheet, topRow);
-    return;
-  }
-  
-  if (e.range.getColumn() === analyzeTestColumn) {
-    const v = String(e.range.getValue() || "");
-    if (v === "Yes") {
-      e.range.setBackground("#d4edbc"); // green
-    } else if (v === "Update") {
-      e.range.setBackground("#fff7bf"); // light yellow
-    } else if (v === "No") {
-      e.range.setBackground("#ffcfc9"); // light red
-    } else {
-      e.range.setBackground(null);
-    }
-  }
-
-  if (e.range.getColumn() === eventValueTestColumn && e.range.getRow() >= firstRow) {
-    const val = String(e.range.getValue() || "");
-    if (val === "Yes") {
-      e.range.setBackground("#eafcd7"); // light green
-    } else if (val === "No") {
-      e.range.setBackground(null);
-    } else {
-      e.range.setBackground(null);
+      return;
     }
 
-  // Apply/refresh the Event Value UI for this 2-row block
-  const topRow = ((e.range.getRow() - firstRow) % 2 === 0) ? e.range.getRow() : e.range.getRow() - 1;
-  enforceEventValueForBlock(sheet, topRow);
-  return;
-}
+    // --- Analyze Test Colors ---
+    if (editedCol === analyzeTestColumn) {
+      const v = String(e.range.getValue() || "");
+      if (v === "Yes") e.range.setBackground("#d4edbc"); // green
+      else if (v === "Update") e.range.setBackground("#fff7bf"); // light yellow
+      else if (v === "No") e.range.setBackground("#ffcfc9"); // light red
+      else e.range.setBackground(null);
+    }
 
+    // --- Event Value Test Colors & UI Update ---
+    if (editedCol === eventValueTestColumn) {
+      const val = String(e.range.getValue() || "");
+      if (val === "Yes") e.range.setBackground("#eafcd7");
+      else e.range.setBackground(null);
 
-  // Toggle per-variant settings (Same/Different)
-  if (editedCol === variantSettingsColumn && editedRow >= firstRow) {
-    const topRow = ((editedRow - firstRow) % 2 === 0) ? editedRow : editedRow - 1;
+      const topRow = ((editedRow - firstRow) % 2 === 0) ? editedRow : editedRow - 1;
+      enforceEventValueForBlock(sheet, topRow);
+      return;
+    }
 
-    enforceVariantSettingsForBlock(sheet, topRow);
-    // ensure filter dropdowns align with the (un)merged state
-    enforceFilterForBlock(sheet, topRow);
-    return;
-  }
+    // --- Toggle per-variant settings (Same/Different) ---
+    if (editedCol === variantSettingsColumn) {
+      const topRow = ((editedRow - firstRow) % 2 === 0) ? editedRow : editedRow - 1;
+      enforceVariantSettingsForBlock(sheet, topRow);
+      enforceFilterForBlock(sheet, topRow);
+      enforceEventValueForBlock(sheet, topRow);
+      return;
+    }
 
-  if (editedCol === variantSettingsColumn && editedRow >= firstRow) {
-    const topRow = ((editedRow - firstRow) % 2 === 0) ? editedRow : editedRow - 1;
+    // --- Filters integration: seed Filters rows ---
+    const topRowSync = ((editedRow - firstRow) % 2 === 0) ? editedRow : (editedRow - 1);
+    const useFiltersOn = (String(sheet.getRange(topRowSync, filterColumn).getValue() || '').toLowerCase() === 'yes');
+    const advCellVal = !!sheet.getRange(topRowSync, filterAdvancedColumn).getValue();
 
-    enforceVariantSettingsForBlock(sheet, topRow);
-    enforceFilterForBlock(sheet, topRow);
-    enforceEventValueForBlock(sheet, topRow); // <-- add this line
-    return;
-  }
-
-  // --- Filters integration: seed Filters rows when Advanced toggles or Variant Settings change
-  if (editedRow >= firstRow) {
-    const topRow = ((editedRow - firstRow) % 2 === 0) ? editedRow : (editedRow - 1);
-
-    const useFiltersOn = (String(sheet.getRange(topRow, filterColumn).getValue() || '').toLowerCase() === 'yes');
-    const advCellVal = !!sheet.getRange(topRow, filterAdvancedColumn).getValue();
-
-    const isAdvancedToggle  = (editedCol === filterAdvancedColumn);
+    const isAdvancedToggle = (editedCol === filterAdvancedColumn);
     const isVariantSettings = (editedCol === variantSettingsColumn);
     const isSimpleFilterCol = (editedCol === filterTypeColumn ||
-                                editedCol === filterOnValueColumn ||
-                                editedCol === filterScopeColumn ||
-                                editedCol === filterFieldColumn ||
-                                editedCol === filterValueColumn);
+                               editedCol === filterOnValueColumn ||
+                               editedCol === filterScopeColumn ||
+                               editedCol === filterFieldColumn ||
+                               editedCol === filterValueColumn);
 
-    // Identify this experiment using both numeric ID and name (safer)
-    const idStr = String(sheet.getRange(topRow, idColumn).getValue() || '').trim();
-    const nameStr = String(sheet.getRange(topRow, experimentNameColumn).getValue() || '').trim();
+    const idStr = String(sheet.getRange(topRowSync, idColumn).getValue() || '').trim();
+    const nameStr = String(sheet.getRange(topRowSync, experimentNameColumn).getValue() || '').trim();
     const idKeys = [];
+    
     if (idStr) idKeys.push(idStr);
     if (nameStr && nameStr !== idStr) idKeys.push(nameStr);
 
     if (isAdvancedToggle) {
       if (useFiltersOn && advCellVal) {
-        storeFilterDropdownSnapshotForBlock_(sheet, topRow);
-        // Advanced turned ON → seed (or refresh missing) rows
-        filtersSeedFromExperimentBlock(sheet, topRow, { useIdFrom: 'id' });
-        filtersBtnFormatBlocks();
+        storeFilterDropdownSnapshotForBlock_(sheet, topRowSync);
+        filtersSeedFromExperimentBlock(sheet, topRowSync, { useIdFrom: 'id' });
+        if (typeof filtersBtnFormatBlocks === 'function') filtersBtnFormatBlocks();
       } else if (useFiltersOn && !advCellVal) {
-        // Advanced turned OFF → delete all Filters rows for this experiment
-        const removed = filtersDeleteRowsForExperiment(idKeys);
-        SpreadsheetApp.getActive().toast('Advanced OFF → removed ' + removed + ' filter row' + (removed===1?'':'s') + ' for ' + (nameStr || idStr) + '.');
+        if (typeof filtersDeleteRowsForExperiment === 'function') {
+           const removed = filtersDeleteRowsForExperiment(idKeys);
+           ss.toast('Advanced OFF → removed ' + removed + ' filter row' + (removed===1?'':'s') + ' for ' + (nameStr || idStr) + '.');
+        }
       }
     } else if (useFiltersOn && advCellVal && (isVariantSettings || isSimpleFilterCol)) {
-      // While Advanced is ON, keep seeded rows in sync when variant settings or legacy filter cells change
-      filtersSeedFromExperimentBlock(sheet, topRow, { useIdFrom: 'id' });
+      if (typeof filtersSeedFromExperimentBlock === 'function') {
+         filtersSeedFromExperimentBlock(sheet, topRowSync, { useIdFrom: 'id' });
+      }
     }
   }
 
-  // If editing on the Filters sheet, re-bind Filter Field dropdown when Scope changes
-  if (sheet.getName() === filtersSheetName && editedRow >= filtersDataStartRow) {
-    if (editedCol === 6) { // Filter Scope column in Filters sheet
-      filtersApplyFilterFieldDropdownForRow(sheet, editedRow);
-      return;
+if (sheetName === calculatorSheetName) {
+    
+    // 3. Check if the edit happened in Column D (Column 4) AND Row 27 or below
+    if (editedRange.getColumn() === 4 && editedRange.getRow() >= 27) {
+      
+      const scopeValue = e.value; // What the user just selected in Column D
+      const targetCell = sheet.getRange(editedRange.getRow(), 5); // The adjacent cell in Column E
+      
+      // If the user deleted the scope, clear the field dropdown and stop
+      if (!scopeValue) {
+        targetCell.clearDataValidations().clearContent();
+        return;
+      }
+      
+      // Fetch the mapping from Lookup_Filter_Fields
+      const ss = e.source;
+      const lookupSheet = ss.getSheetByName("Lookup_Filter_Fields");
+      const lastRow = lookupSheet.getLastRow();
+      
+      if (lastRow < 2) return; // Exit if the lookup sheet is empty
+      
+      const lookupData = lookupSheet.getRange(2, 1, lastRow - 1, 2).getValues();
+      
+      // Filter the fields that match the selected Scope
+      const validFields = [];
+      for (let i = 0; i < lookupData.length; i++) {
+        if (lookupData[i][0] === scopeValue && lookupData[i][1] !== "") {
+          validFields.push(lookupData[i][1]);
+        }
+      }
+      
+      // Apply the new dynamic dropdown to Column E
+      if (validFields.length > 0) {
+        const rule = SpreadsheetApp.newDataValidation().requireValueInList(validFields, true).build();
+        targetCell.setDataValidation(rule);
+        
+        // Safety check: If the user changes D, but E already has an old value, 
+        // clear E so they don't accidentally query a mismatched Event/Column combo.
+        const currentValue = targetCell.getValue();
+        if (validFields.indexOf(currentValue) === -1) {
+          targetCell.clearContent();
+        }
+      } else {
+        targetCell.clearDataValidations().clearContent();
+      }
     }
-  }
-
-  // Show or hide row in Settings Sheet.
-  const settingsCell = ss.getRangeByName('SettingsAnalyticsTool');
-  if (!settingsCell || !e || !e.range) return;
-
-  // Only run when the named range cell is edited (handles multi-cell named ranges too)
-  const r = e.range, s = settingsCell;
-  const sameSheet = r.getSheet().getSheetId() === s.getSheet().getSheetId();
-  const inRow = r.getRow() >= s.getRow() && r.getRow() <= s.getLastRow();
-  const inCol = r.getColumn() >= s.getColumn() && r.getColumn() <= s.getLastColumn();
-
-  if (sameSheet && inRow && inCol) {
-    updateAnalyticsToolText();
   }
 }
 
@@ -1010,7 +1019,7 @@ function updateAnalyticsToolText(e) {
   if (val === 'google analytics') {
     messageCellDataSet.setValue('Data Set ID: analytics_12345 (replace 12345 with your ID).');
     messageCellTable.setValue('Table ID: events_ OR events_fresh_ (GA360 only)');
-  } else if (val === 'ga4 dataform') {
+  } else if (val === 'ga4dataform') {
     messageCellDataSet.setValue('Data Set ID: superform_outputs_12345 (replace 12345 with your ID).');
     messageCellTable.setValue('Table ID: ga4_events');
   } else if (val === 'amplitude') {
@@ -1019,6 +1028,9 @@ function updateAnalyticsToolText(e) {
   } else if (val === 'mixpanel') {
     messageCellDataSet.setValue('Data Set ID: What you called your Mixpanel Data Set, ex. mixpanel).');
     messageCellTable.setValue('Table ID: mp_master_event');
+  } else if (val === 'posthog') {
+    messageCellDataSet.setValue('Data Set ID: What you called your PostHog Data Set, ex. posthog).');
+    messageCellTable.setValue('Table ID: events');
   } else {
     messageCellDataSet.clearContent();
     messageCellTable.clearContent();

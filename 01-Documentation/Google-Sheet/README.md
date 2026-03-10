@@ -7,7 +7,7 @@ If you haven't done so already, do the following Google Sheet setup:
 1. Create a folder in **Google Drive** for the **BigQuery A/B Analyzer** solution.
 	1. Within that folder, create a **Images** folder.
 		1. Change **sharing** on the **Images** folder to **Anyone on the Internet with the link can view**.
-2. Copy the [**Google Sheet**](https://docs.google.com/spreadsheets/d/1ba5VPyk_huX3bclMY0w2jhFRuDQ5tVYyVEuLqVNpuCg/edit?usp=sharing) into the **BigQuery A/B Analyzer** folder.
+2. Copy the [**Google Sheet**](https://docs.google.com/spreadsheets/d/1voZiTk-JD6OK9PDlGaqJh4CBOPwTbxWnnrhrZMy4-Q8/edit?usp=sharing) into the **BigQuery A/B Analyzer** folder.
 	1. Go to the [**Settings** sheet](Settings-Sheet). Follow the setup there.
 
 Almost everything is powered by **[Apps Script](Apps-Script)**.

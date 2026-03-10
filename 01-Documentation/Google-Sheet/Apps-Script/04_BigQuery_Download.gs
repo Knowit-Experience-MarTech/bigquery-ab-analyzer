@@ -19,12 +19,14 @@ function refreshEvents() {
   const tool = getAnalyticsTool();
   if (tool === 'Google Analytics') {
     refreshEventsGA4();
-  } else if (tool === 'GA4 Dataform') {
+  } else if (tool === 'GA4Dataform') {
     refreshEventsGA4Dataform();
   } else if (tool === 'Amplitude') {
     refreshEventsAmplitude();
   } else if (tool === 'Mixpanel') {
     refreshEventsMixpanel();
+  } else if (tool === 'PostHog') {
+    refreshEventsPostHog();
   } else {
     SpreadsheetApp.getUi().alert('Unsupported SettingsAnalyticsTool: ' + tool);
   }
@@ -35,12 +37,14 @@ function refreshParameters() {
   const tool = getAnalyticsTool();
   if (tool === 'Google Analytics') {
     refreshParametersGA4();
-  } else if (tool === 'GA4 Dataform') {
+  } else if (tool === 'GA4Dataform') {
     refreshParametersGA4Dataform();
   } else if (tool === 'Amplitude') {
     refreshParametersAmplitude();
   } else if (tool === 'Mixpanel') {
     refreshParametersMixpanel();
+  } else if (tool === 'PostHog') {
+    refreshParametersPostHog();
   } else {
     SpreadsheetApp.getUi().alert('Unsupported SettingsAnalyticsTool: ' + tool);
   }
@@ -562,36 +566,89 @@ function buildExperimentsSqlAmplitude(fq, nDays, exclEvents, projectId, datasetI
 
 /** ---------- Amplitude: JSON-aware parameter discovery ---------- **/
 /** 1) Try schema for event/user property names; 2) If no event props in schema, scan JSON text. */
-function amplitudeDetectParamNames(projectId, datasetId, baseTableId, nDays, location) {
-  // Try schema first
+function amplitudeDetectParamNames(projectId, datasetId, baseTableId, nDays, location, itemsObject) {
+  itemsObject = itemsObject || 'Products';
+
+  // 1. Try schema first
   let evSet={}, usrSet={};
   const rows = runBQ(projectId, location, amplitudeColumnFieldPathsSQL(projectId, datasetId, baseTableId));
-  for (let i=0;i<rows.length;i++){
+  for (let i=0; i<rows.length; i++){
     const fp = String(rows[i][0]||'');
-    if (fp.indexOf('event_properties.')===0) { let e=fp.substring('event_properties.'.length).split('.')[0]; if (e) evSet[e]=true; }
-    if (fp.indexOf('user_properties.')===0)  { let u=fp.substring('user_properties.'.length).split('.')[0];  if (u) usrSet[u]=true; }
+    
+    // Check Event Properties
+    if (fp.indexOf('event_properties.') === 0) { 
+      let parts = fp.substring('event_properties.'.length).split('.');
+      let e = parts[0]; 
+      
+      // If the property matches our itemsObject and has a nested child, use dot notation
+      if (e === itemsObject && parts.length > 1) {
+        evSet[e + '.' + parts[1]] = true; // e.g., "Products.name"
+      } else if (e) { 
+        evSet[e] = true; 
+      }
+    }
+    
+    // Check User Properties
+    if (fp.indexOf('user_properties.') === 0) { 
+      let u = fp.substring('user_properties.'.length).split('.')[0];  
+      if (u) usrSet[u] = true; 
+    }
   }
+  
   const ev = Object.keys(evSet).sort();
   const usr = Object.keys(usrSet).sort();
   if (ev.length) return { eventParamNames: ev, userParamNames: usr }; // schema had event props
 
-  // Fallback: scan JSON in event_properties (top-level keys)
+  // 2. Fallback: Pure BigQuery SQL (No UDFs)
   const fq = projectId + "." + datasetId + "." + baseTableId;
   const dateCol = amplitudeDetectDateColumn(projectId, datasetId, baseTableId, location);
   const where = amplitudeDateWhereClause(dateCol, nDays);
-  const sql = ""
-    + "WITH base AS (\n"
-    + "  SELECT TO_JSON_STRING(event_properties) AS ep_json\n"
-    + "  FROM `" + fq + "`\n" + where + "\n"
-    + "), keys AS (\n"
-    + "  SELECT DISTINCT key\n"
-    + "  FROM base, UNNEST(REGEXP_EXTRACT_ALL(ep_json, r'\"((?:[^\"\\\\]|\\\\.)+)\"\\s*:')) AS key\n"
-    + ")\n"
-    + "SELECT key FROM keys ORDER BY key";
+  
+  // Uses pure SQL to unnest JSON, stripping out the target array for top-level keys, 
+  // and specifically mapping the nested array keys.
+  const sql = `
+    WITH base AS (
+      SELECT TO_JSON_STRING(event_properties) AS ep_json
+      FROM \`${fq}\`
+      ${where}
+    ),
+    extracted AS (
+      SELECT 
+        ep_json,
+        SAFE.PARSE_JSON(ep_json) AS parsed_json
+      FROM base
+    ),
+    keys_raw AS (
+      -- 1) Top level keys (we remove the itemsObject array so its internal keys aren't grabbed as top-level)
+      SELECT DISTINCT key
+      FROM extracted,
+      UNNEST(REGEXP_EXTRACT_ALL(
+        COALESCE(TO_JSON_STRING(JSON_REMOVE(parsed_json, '$.${itemsObject}')), ep_json), 
+        r'"((?:[^"\\\\]|\\\\.)+)"\\s*:'
+      )) AS key
+      
+      UNION DISTINCT
+      
+      -- 2) Nested keys inside the itemsObject
+      SELECT DISTINCT CONCAT('${itemsObject}.', key) AS key
+      FROM extracted,
+      UNNEST(JSON_EXTRACT_ARRAY(ep_json, '$.${itemsObject}')) AS item_str,
+      UNNEST(REGEXP_EXTRACT_ALL(item_str, r'"((?:[^"\\\\]|\\\\.)+)"\\s*:')) AS key
+    )
+    SELECT key FROM keys_raw 
+    WHERE key IS NOT NULL 
+      AND key != '${itemsObject}' 
+    ORDER BY key
+  `;
+
   const krows = runBQ(projectId, location, sql);
   let out = [];
-  for (let j=0;j<krows.length;j++){ let k = String(krows[j][0]||'').trim(); if (k) out.push(k); }
-  return { eventParamNames: out, userParamNames: usr }; // user props likely empty in your table
+  for (let j=0; j<krows.length; j++){ 
+    let k = String(krows[j][0]||'').trim(); 
+    if (k) out.push(k); 
+  }
+  
+  return { eventParamNames: out, userParamNames: usr }; 
 }
 
 /** Variant params (Amplitude): EVENT + USER names minus exact excludes (JSON-aware). */
@@ -610,55 +667,89 @@ function buildParamsExperimentVariantSqlAmplitude(projectId, datasetId, baseTabl
 }
 
 /** Value params (Amplitude): EVENT keys with NON-STRING value at least once (JSON-aware, regex-only). */
-function buildParamsExperimentValueSqlAmplitude(projectId, datasetId, baseTableId, excludeParams, nDays, location) {
+function buildParamsExperimentValueSqlAmplitude(projectId, datasetId, baseTableId, excludeParams, nDays, location, itemsObject) {
+  // Ensure we have a fallback if itemsObject isn't passed
+  itemsObject = itemsObject || 'Products';
+
   // Candidate keys from JSON/schema (event scope), minus exact excludes
-  const evKeys = amplitudeDetectParamNames(projectId, datasetId, baseTableId, nDays, location)
-               .eventParamNames.filter(function(n){ return excludeParams.indexOf(n) === -1; });
+  // UPDATED: Added itemsObject to the detect function call
+  const evKeys = amplitudeDetectParamNames(projectId, datasetId, baseTableId, nDays, location, itemsObject)
+                 .eventParamNames.filter(function(n){ return excludeParams.indexOf(n) === -1; });
+                 
   if (!evKeys.length) return "SELECT '' AS parameter_name LIMIT 0";
 
   const fq = projectId + "." + datasetId + "." + baseTableId;
   const dateCol = amplitudeDetectDateColumn(projectId, datasetId, baseTableId, location);
   const where = amplitudeDateWhereClause(dateCol, nDays); // "WHERE TRUE" if none
 
-  /* From JSON text ep_json, pull raw token after "key": and classify.
-     Non-string if it matches:
-       - number:   ^\s*-?(?:\d+\.?\d*|\d*\.\d+)(?:[eE][+-]?\d+)?\s*$
-       - boolean:  ^\s*(true|false)\s*$
-       - object:   ^\s*\{
-       - array:    ^\s*\[
-     Exclude quoted strings and null explicitly.
-  */
+  // NEW: Separate candidate keys into top-level and nested categories
+  let topKeys = [];
+  let nestedKeys = [];
+  let prefix = itemsObject + '.';
+
+  for (let i = 0; i < evKeys.length; i++) {
+    let k = evKeys[i];
+    if (k.indexOf(prefix) === 0) {
+      nestedKeys.push(k.substring(prefix.length)); // Keep only the child key (e.g., "price")
+    } else {
+      topKeys.push(k);
+    }
+  }
+
+  // Handle empty arrays gracefully for BigQuery UNNEST
+  const topArrLit = topKeys.length ? arrLit(topKeys) : "[]";
+  const nestArrLit = nestedKeys.length ? arrLit(nestedKeys) : "[]";
+
+  // Retain original complex regexes exactly as they were to prevent JS escaping issues
+  const keyRegexConcat = "CONCAT(\n" +
+                         "  '\\\"',\n" +
+                         "  REGEXP_REPLACE(k.name, r'([\\\\^$.*+?()\\[\\]{}|])', r'\\\\\\\\\\1'),\n" +
+                         "  '\\\"\\\\s*:\\\\s*([^,}\\\\]]+)'\n" +
+                         ")";
+
+  const countIfLogic = "COUNTIF(\n" +
+                       "  val IS NOT NULL AND LOWER(val) != 'null' AND NOT REGEXP_CONTAINS(val, r'^\\s*\\\"') AND (\n" +
+                       "    REGEXP_CONTAINS(val, r'^\\s*-?(?:\\d+\\.?\\d*|\\d*\\.\\d+)(?:[eE][+-]?\\d+)?\\s*$') OR\n" +
+                       "    REGEXP_CONTAINS(val, r'^\\s*(?:true|false)\\s*$') OR\n" +
+                       "    REGEXP_CONTAINS(val, r'^\\s*\\{') OR\n" +
+                       "    REGEXP_CONTAINS(val, r'^\\s*\\[')\n" +
+                       "  )\n" +
+                       ") AS non_string_hits";
+
+  // NEW: The upgraded SQL with parallel top-level and nested value extraction
   const sql =
-    "WITH k AS (\n" +
-    "  SELECT name FROM UNNEST(" + arrLit(evKeys) + ") AS name\n" +
+    "WITH top_k AS (\n" +
+    "  SELECT name FROM UNNEST(CAST(" + topArrLit + " AS ARRAY<STRING>)) AS name\n" +
+    "), nest_k AS (\n" +
+    "  SELECT name FROM UNNEST(CAST(" + nestArrLit + " AS ARRAY<STRING>)) AS name\n" +
     "), base AS (\n" +
-    "  SELECT TO_JSON_STRING(event_properties) AS ep_json\n" +
+    "  SELECT TO_JSON_STRING(event_properties) AS ep_json,\n" +
+    "         SAFE.PARSE_JSON(TO_JSON_STRING(event_properties)) AS parsed_json\n" +
     "  FROM `" + fq + "`\n" + where + "\n" +
-    "), pairs AS (\n" +
-    "  SELECT k.name AS key,\n" +
-    "         TRIM(v) AS val\n" +
+    "), pairs_top AS (\n" +
+    "  SELECT k.name AS key, TRIM(v) AS val\n" +
     "  FROM base\n" +
-    "  CROSS JOIN k,\n" +
-    "  UNNEST(\n" +
-    "    REGEXP_EXTRACT_ALL(\n" +
-    "      ep_json,\n" +
-    "      CONCAT(\n" +
-    "        '\\\"',\n" +
-    "        REGEXP_REPLACE(k.name, r'([\\\\^$.*+?()\\[\\]{}|])', r'\\\\\\\\\\1'),\n" +
-    "        '\\\"\\\\s*:\\\\s*([^,}\\\\]]+)'\n" +
-    "      )\n" +
-    "    )\n" +
-    "  ) AS v\n" +
+    "  CROSS JOIN top_k AS k\n" +
+    "  CROSS JOIN UNNEST(REGEXP_EXTRACT_ALL(\n" +
+    "    COALESCE(TO_JSON_STRING(JSON_REMOVE(parsed_json, '$." + itemsObject + "')), ep_json),\n" +
+    "    " + keyRegexConcat + "\n" +
+    "  )) AS v\n" +
+    "), pairs_nested AS (\n" +
+    "  SELECT CONCAT('" + itemsObject + ".', k.name) AS key, TRIM(v) AS val\n" +
+    "  FROM base\n" +
+    "  CROSS JOIN nest_k AS k\n" +
+    "  CROSS JOIN UNNEST(JSON_EXTRACT_ARRAY(parsed_json, '$." + itemsObject + "')) AS item_json\n" +
+    "  CROSS JOIN UNNEST(REGEXP_EXTRACT_ALL(\n" +
+    "    TO_JSON_STRING(item_json),\n" +
+    "    " + keyRegexConcat + "\n" +
+    "  )) AS v\n" +
+    "), pairs AS (\n" +
+    "  SELECT * FROM pairs_top\n" +
+    "  UNION ALL\n" +
+    "  SELECT * FROM pairs_nested\n" +
     "), agg AS (\n" +
     "  SELECT key,\n" +
-    "         COUNTIF(\n" +
-    "           val IS NOT NULL AND LOWER(val) != 'null' AND NOT REGEXP_CONTAINS(val, r'^\\s*\\\"') AND (\n" +
-    "             REGEXP_CONTAINS(val, r'^\\s*-?(?:\\d+\\.?\\d*|\\d*\\.\\d+)(?:[eE][+-]?\\d+)?\\s*$') OR\n" +
-    "             REGEXP_CONTAINS(val, r'^\\s*(?:true|false)\\s*$') OR\n" +
-    "             REGEXP_CONTAINS(val, r'^\\s*\\{') OR\n" +
-    "             REGEXP_CONTAINS(val, r'^\\s*\\[')\n" +
-    "           )\n" +
-    "         ) AS non_string_hits\n" +
+    "         " + countIfLogic + "\n" +
     "  FROM pairs\n" +
     "  GROUP BY key\n" +
     ")\n" +
@@ -671,8 +762,13 @@ function buildParamsExperimentValueSqlAmplitude(projectId, datasetId, baseTableI
 }
 
 /** Filter fields (Amplitude): Event + User params (JSON-aware) minus excludes + Columns by regex. */
-function buildFilterFieldsSQL_Amplitude(projectId, datasetId, baseTableId, excludeParams, allowRegex, nDays, location) {
-  const names = amplitudeDetectParamNames(projectId, datasetId, baseTableId, nDays, location);
+function buildFilterFieldsSQL_Amplitude(projectId, datasetId, baseTableId, excludeParams, allowRegex, nDays, location, itemsObject) {
+  // Ensure we have a fallback if itemsObject isn't passed
+  itemsObject = itemsObject || 'Products';
+
+  // UPDATED: Passed itemsObject to the detection function
+  const names = amplitudeDetectParamNames(projectId, datasetId, baseTableId, nDays, location, itemsObject);
+  
   const ev  = names.eventParamNames.filter(function(n){ return excludeParams.indexOf(n) === -1; });
   const usr = names.userParamNames.filter(function(n){ return excludeParams.indexOf(n) === -1; });
 
@@ -729,6 +825,9 @@ function refreshParametersAmplitude() {
   const exclParams  = parseCommaList(readNamed('SettingsBigQueryExcludeParametersList', ''));
   const allowRegex  = readNamed('SettingsBigQueryColumns', '');
   const daysHuman   = readNamed('SettingsBigQueryNumberOfDaysToQuery', '2 Last Days');
+  
+  // NEW: Read the dynamic items object name (defaults to 'Products' if empty)
+  const itemsObject = readNamed('SettingsItemsObject', 'Products');
 
   if (!projectId || !datasetId || !tableIdRaw) {
     SpreadsheetApp.getUi().alert('Missing projectId, datasetId, or tableId in Settings.');
@@ -743,8 +842,9 @@ function refreshParametersAmplitude() {
 
   const nDays = Math.max(1, parseFirstInteger(daysHuman, 2));
 
-  // ----- Build ExperimentVariant IN-MEMORY (robust for JSON keys with spaces/brackets)
-  const names = amplitudeDetectParamNames(projectId, datasetId, norm.baseTableId, nDays, location);
+  // ----- Build ExperimentVariant IN-MEMORY
+  // UPDATED: Passed itemsObject as the final parameter
+  const names = amplitudeDetectParamNames(projectId, datasetId, norm.baseTableId, nDays, location, itemsObject);
   const evParams  = names.eventParamNames.filter(function(n){ return exclParams.indexOf(n) === -1; });
   const usrParams = names.userParamNames.filter(function(n){ return exclParams.indexOf(n) === -1; });
 
@@ -752,15 +852,17 @@ function refreshParametersAmplitude() {
   for (let i = 0; i < evParams.length; i++)  pvarOut.push([evParams[i], 'EVENT']);
   for (let j = 0; j < usrParams.length; j++) pvarOut.push([usrParams[j], 'USER']);
 
-  // ----- Build ExperimentValue via SQL (regex-based non-string classifier)
+  // ----- Build ExperimentValue via SQL
+  // UPDATED: Passed itemsObject as the final parameter
   const sqlValue = buildParamsExperimentValueSqlAmplitude(
-    projectId, datasetId, norm.baseTableId, exclParams, nDays, location
+    projectId, datasetId, norm.baseTableId, exclParams, nDays, location, itemsObject
   );
   let pval = runBQ(projectId, location, sqlValue);   // rows: [parameter_name]
 
-  // ----- Build Filter Fields via SQL (uses same discovery + your regex for Columns)
+  // ----- Build Filter Fields via SQL
+  // UPDATED: Passed itemsObject as the final parameter
   const sqlFilter = buildFilterFieldsSQL_Amplitude(
-    projectId, datasetId, norm.baseTableId, exclParams, allowRegex, nDays, location
+    projectId, datasetId, norm.baseTableId, exclParams, allowRegex, nDays, location, itemsObject
   );
   const filt = runBQ(projectId, location, sqlFilter);  // rows: [filter_type, name]
 
@@ -781,7 +883,7 @@ function refreshParametersAmplitude() {
   );
 }
 
-/** ===================== GA4 DATAFORM: DRIVERS ===================== **/
+/** ===================== GA4DATAFORM: DRIVERS ===================== **/
 
 function refreshEventsGA4Dataform() {
   // 1. Read Settings
@@ -822,8 +924,8 @@ function refreshEventsGA4Dataform() {
   writeTable('Lookup_Experiments', exRows);
 
   SpreadsheetApp.getActive().toast(
-    'GA4 Dataform events refreshed (' + tableName + ') · Events: ' + evRows.length,
-    'GA4 Dataform', 6
+    'GA4Dataform events refreshed (' + tableName + ') · Events: ' + evRows.length,
+    'GA4Dataform', 6
   );
 }
 
@@ -877,12 +979,12 @@ function refreshParametersGA4Dataform() {
   writeTable('Lookup_Filter_Fields', filt);
 
   SpreadsheetApp.getActive().toast(
-    'GA4 Dataform params refreshed (' + tableName + ') · Fields: ' + filt.length,
-    'GA4 Dataform', 7
+    'GA4Dataform params refreshed (' + tableName + ') · Fields: ' + filt.length,
+    'GA4Dataform', 7
   );
 }
 
-/** ===================== GA4 DATAFORM: SQL BUILDERS ===================== **/
+/** ===================== GA4DATAFORM: SQL BUILDERS ===================== **/
 
 function buildEventsSqlGA4Dataform(fqTable, suffix, excludeEvents) {
   // Uses PARSE_DATE because suffix is YYYYMMDD but event_date is DATE type
@@ -1062,6 +1164,9 @@ function refreshParametersMixpanel() {
   const daysHuman = readNamed('SettingsBigQueryNumberOfDaysToQuery', '2 Last Days');
   const exclParams = parseCommaList(readNamed('SettingsBigQueryExcludeParametersList', ''));
   const allowRegex = readNamed('SettingsBigQueryColumns', '');
+  
+  // NEW: Fetch the dynamic items object name (defaults to 'Items' if blank)
+  const itemsObj  = readNamed('SettingsItemsObject', 'Items');
 
   if (!projectId || !datasetId || !tableId) {
     SpreadsheetApp.getUi().alert('Missing projectId, datasetId, or tableId in Settings.');
@@ -1071,11 +1176,10 @@ function refreshParametersMixpanel() {
   const nDays = Math.max(1, parseFirstInteger(daysHuman, 2));
   const fqTable = "`" + projectId + "." + datasetId + "." + tableId + "`";
 
-  // 1. Build SQL
-  // Mixpanel params are buried in the 'properties' JSON column.
-  const sqlVariant = buildParamsExperimentVariantSqlMixpanel(fqTable, nDays, exclParams);
-  const sqlValue   = buildParamsExperimentValueSqlMixpanel(fqTable, nDays, exclParams);
-  const sqlFilter  = buildFilterFieldsSqlMixpanel(fqTable, nDays, exclParams, allowRegex, projectId, datasetId, tableId);
+  // 1. Build SQL (Passing the itemsObj variable down)
+  const sqlVariant = buildParamsExperimentVariantSqlMixpanel(fqTable, nDays, exclParams, itemsObj);
+  const sqlValue   = buildParamsExperimentValueSqlMixpanel(fqTable, nDays, exclParams, itemsObj);
+  const sqlFilter  = buildFilterFieldsSqlMixpanel(fqTable, nDays, exclParams, allowRegex, projectId, datasetId, tableId, itemsObj);
 
   // 2. Run Query
   let pvar = runBQ(projectId, location, sqlVariant);
@@ -1129,14 +1233,13 @@ function buildExperimentsSqlMixpanel(fqTable, nDays, excludeEvents) {
   `;
 }
 
-function buildParamsExperimentVariantSqlMixpanel(fqTable, nDays, excludeParams) {
-  // Scans the 'properties' column for keys.
-  // We exclude keys starting with '$' (internal Mixpanel keys) unless specifically needed, 
-  // but usually for A/B testing we want custom properties.
-  // You can remove "AND NOT STARTS_WITH(key, '$')" if you need internal keys.
+/** ===================== MIXPANEL: SQL BUILDERS (DYNAMIC ITEMS OBJECT) ===================== **/
 
+/** ===================== MIXPANEL: SQL BUILDERS (DYNAMIC ITEMS OBJECT) ===================== **/
+
+function buildParamsExperimentVariantSqlMixpanel(fqTable, nDays, excludeParams, itemsObj) {
   const excludeSql = excludeParams.length 
-    ? `AND key NOT IN UNNEST(${arrLit(excludeParams)})` 
+    ? `AND parameter_name NOT IN UNNEST(${arrLit(excludeParams)})` 
     : "";
 
   return `
@@ -1145,25 +1248,33 @@ function buildParamsExperimentVariantSqlMixpanel(fqTable, nDays, excludeParams) 
       FROM ${fqTable}
       WHERE time >= TIMESTAMP(DATE_SUB(CURRENT_DATE(), INTERVAL ${nDays} DAY))
     ),
-    extracted_keys AS (
-      SELECT DISTINCT key
+    event_keys AS (
+      SELECT DISTINCT key AS parameter_name, 'EVENT' AS parameter_scope
       FROM raw_json,
-      UNNEST(REGEXP_EXTRACT_ALL(json_str, r'"([^"]+)":')) AS key
+      -- Remove the dynamic items array before extracting to prevent overlap
+      UNNEST(REGEXP_EXTRACT_ALL(REGEXP_REPLACE(json_str, r'"${itemsObj}":\\[.*?\\]', ''), r'"([^"]+)":')) AS key
+      WHERE key IS NOT NULL AND key != '${itemsObj}'
+    ),
+    item_keys AS (
+      SELECT DISTINCT CONCAT('${itemsObj}.', key) AS parameter_name, 'ITEM' AS parameter_scope
+      FROM raw_json,
+      -- Extract directly from the isolated JSON array using bracket notation
+      UNNEST(REGEXP_EXTRACT_ALL(JSON_EXTRACT(json_str, '$[\\'${itemsObj}\\']'), r'"([^"]+)":')) AS key
+      WHERE JSON_EXTRACT(json_str, '$[\\'${itemsObj}\\']') IS NOT NULL AND key IS NOT NULL
     )
-    SELECT DISTINCT key AS parameter_name, 'EVENT' AS parameter_scope
-    FROM extracted_keys
-    WHERE key IS NOT NULL
-    ${excludeSql}
-    ORDER BY 1
+    SELECT * FROM (
+      SELECT * FROM event_keys
+      UNION DISTINCT
+      SELECT * FROM item_keys
+    )
+    WHERE 1=1 ${excludeSql}
+    ORDER BY parameter_scope, parameter_name
   `;
 }
 
-function buildParamsExperimentValueSqlMixpanel(fqTable, nDays, excludeParams) {
-  // Detects Numeric parameters inside the 'properties' JSON blob.
-  // It looks for patterns like "key": 123 or "key": 12.34
-  
+function buildParamsExperimentValueSqlMixpanel(fqTable, nDays, excludeParams, itemsObj) {
   const excludeSql = excludeParams.length 
-    ? `AND key NOT IN UNNEST(${arrLit(excludeParams)})` 
+    ? `AND parameter_name NOT IN UNNEST(${arrLit(excludeParams)})` 
     : "";
 
   return `
@@ -1172,15 +1283,28 @@ function buildParamsExperimentValueSqlMixpanel(fqTable, nDays, excludeParams) {
       FROM ${fqTable}
       WHERE time >= TIMESTAMP(DATE_SUB(CURRENT_DATE(), INTERVAL ${nDays} DAY))
     ),
-    pairs AS (
+    event_pairs AS (
       SELECT 
-        REGEXP_EXTRACT(pair, r'^"([^"]+)":') as key,
+        REGEXP_EXTRACT(pair, r'^"([^"]+)":') as parameter_name,
         REGEXP_EXTRACT(pair, r':(.*)$') as val
       FROM raw_data,
-      UNNEST(REGEXP_EXTRACT_ALL(json_str, r'"[^"]+":[^,}]+')) AS pair
+      UNNEST(REGEXP_EXTRACT_ALL(REGEXP_REPLACE(json_str, r'"${itemsObj}":\\[.*?\\]', ''), r'"[^"]+":[^,}]+')) AS pair
+    ),
+    item_pairs AS (
+      SELECT 
+        CONCAT('${itemsObj}.', REGEXP_EXTRACT(pair, r'^"([^"]+)":')) as parameter_name,
+        REGEXP_EXTRACT(pair, r':(.*)$') as val
+      FROM raw_data,
+      UNNEST(REGEXP_EXTRACT_ALL(JSON_EXTRACT(json_str, '$[\\'${itemsObj}\\']'), r'"[^"]+":[^,}]+')) AS pair
+      WHERE JSON_EXTRACT(json_str, '$[\\'${itemsObj}\\']') IS NOT NULL
+    ),
+    all_pairs AS (
+      SELECT * FROM event_pairs
+      UNION ALL
+      SELECT * FROM item_pairs
     )
-    SELECT DISTINCT key AS parameter_name
-    FROM pairs
+    SELECT DISTINCT parameter_name
+    FROM all_pairs
     WHERE 
       -- Check if value looks like a number (integer or float)
       REGEXP_CONTAINS(val, r'^\\s*-?(?:\\d+\\.?\\d*|\\d*\\.\\d+)(?:[eE][+-]?\\d+)?\\s*$')
@@ -1191,41 +1315,355 @@ function buildParamsExperimentValueSqlMixpanel(fqTable, nDays, excludeParams) {
   `;
 }
 
-function buildFilterFieldsSqlMixpanel(fqTable, nDays, excludeParams, allowRegex, projectId, datasetId, tableId) {
-  // 1. JSON Properties from the 'properties' column
+function buildFilterFieldsSqlMixpanel(fqTable, nDays, excludeParams, allowRegex, projectId, datasetId, tableId, itemsObj) {
   const excludeSql = excludeParams.length 
-    ? `AND key NOT IN UNNEST(${arrLit(excludeParams)})` 
+    ? `AND name NOT IN UNNEST(${arrLit(excludeParams)})` 
     : "";
 
-  // 2. Standard Columns (if enabled via regex) from Information Schema
   const regexCondition = allowRegex 
     ? `AND REGEXP_CONTAINS(field_path, r'${allowRegex}')` 
-    : "AND FALSE"; // Disable if no regex provided
+    : "AND FALSE";
 
   return `
-    /* 1. Extract Keys from JSON Properties */
     WITH raw_json AS (
       SELECT TO_JSON_STRING(properties) as json_str
       FROM ${fqTable}
       WHERE time >= TIMESTAMP(DATE_SUB(CURRENT_DATE(), INTERVAL ${nDays} DAY))
     ),
     json_keys AS (
-      SELECT DISTINCT key as name, 'Event' as filter_type
+      -- Column A: Scope ('Event'), Column B: Property Name
+      SELECT DISTINCT 'Event' as filter_type, key as name
       FROM raw_json,
-      UNNEST(REGEXP_EXTRACT_ALL(json_str, r'"([^"]+)":')) AS key
-      WHERE key IS NOT NULL
-      ${excludeSql}
+      UNNEST(REGEXP_EXTRACT_ALL(REGEXP_REPLACE(json_str, r'"${itemsObj}":\\[.*?\\]', ''), r'"([^"]+)":')) AS key
+      WHERE key IS NOT NULL AND key != '${itemsObj}'
     ),
-    /* 2. Extract Matching Columns from Schema */
+    item_keys AS (
+      -- Mapped to 'Event' scope instead of 'Item', Column A first
+      SELECT DISTINCT 'Event' as filter_type, CONCAT('${itemsObj}.', key) as name
+      FROM raw_json,
+      UNNEST(REGEXP_EXTRACT_ALL(JSON_EXTRACT(json_str, '$[\\'${itemsObj}\\']'), r'"([^"]+)":')) AS key
+      WHERE JSON_EXTRACT(json_str, '$[\\'${itemsObj}\\']') IS NOT NULL AND key IS NOT NULL
+    ),
     col_keys AS (
-      SELECT DISTINCT field_path as name, 'Column' as filter_type
+      -- Column A: Scope ('Column'), Column B: Field Path
+      SELECT DISTINCT 'Column' as filter_type, field_path as name
       FROM \`${projectId}.${datasetId}\`.INFORMATION_SCHEMA.COLUMN_FIELD_PATHS
       WHERE table_name = '${tableId}'
       ${regexCondition}
     )
-    SELECT * FROM json_keys
+    SELECT * FROM (
+      SELECT * FROM json_keys
+      UNION DISTINCT
+      SELECT * FROM item_keys
+    )
+    WHERE 1=1 ${excludeSql}
     UNION DISTINCT
     SELECT * FROM col_keys
     ORDER BY filter_type, name
+  `;
+}
+
+/** ===================== DRIVERS: POSTHOG ===================== **/
+
+function refreshEventsPostHog() {
+  const projectId = readNamed('SettingsBigQueryProjectID', '');
+  const datasetId = readNamed('SettingsBigQueryDataSetID', '');
+  const tableId   = readNamed('SettingsBigQueryTableID', ''); // e.g. events
+  const location  = readNamed('SettingsBigQueryDataSetLocation', 'EU');
+  const daysHuman = readNamed('SettingsBigQueryNumberOfDaysToQuery', '2 Last Days');
+  const exclEvents = parseCommaList(readNamed('SettingsBigQueryExcludeEventsList', ''));
+
+  if (!projectId || !datasetId || !tableId) {
+    SpreadsheetApp.getUi().alert('Missing projectId, datasetId, or tableId in Settings.');
+    return;
+  }
+
+  // PostHog tables are usually just 'events', but allow flexibility
+  const fqTable = "`" + projectId + "." + datasetId + "." + tableId + "`";
+  const nDays = Math.max(1, parseFirstInteger(daysHuman, 2));
+
+  // 1. Build SQL
+  const sqlEvents = buildEventsSqlPostHog(fqTable, nDays, exclEvents);
+  // PostHog "experiments" are Feature Flags found in properties, 
+  // but we also list events as sources for conversion.
+  const sqlExper  = buildExperimentsSqlPostHog(fqTable, nDays, exclEvents);
+
+  // 2. Run Query
+  const evRows = runBQ(projectId, location, sqlEvents);
+  let exRows   = runBQ(projectId, location, sqlExper);
+
+  // 3. Add Default Experiment Name
+  const defaultExpEvent = readNamed('SettingsExperimentEventName', '');
+  exRows = addDefaultToExperiments(exRows, defaultExpEvent);
+
+  // 4. Write
+  writeTable('Lookup_Events', evRows);
+  writeTable('Lookup_Experiments', exRows);
+
+  SpreadsheetApp.getActive().toast(
+    'PostHog events refreshed · Events: ' + evRows.length,
+    'PostHog', 6
+  );
+}
+
+function refreshParametersPostHog() {
+  const projectId = readNamed('SettingsBigQueryProjectID', '');
+  const datasetId = readNamed('SettingsBigQueryDataSetID', '');
+  const tableId   = readNamed('SettingsBigQueryTableID', '');
+  const location  = readNamed('SettingsBigQueryDataSetLocation', 'EU');
+  const daysHuman = readNamed('SettingsBigQueryNumberOfDaysToQuery', '2 Last Days');
+  const exclParams = parseCommaList(readNamed('SettingsBigQueryExcludeParametersList', ''));
+  const allowRegex = readNamed('SettingsBigQueryColumns', '');
+  
+  // NEW: Read the array name we want to flatten
+  const itemsObject = readNamed('SettingsItemsObject', ''); 
+
+  if (!projectId || !datasetId || !tableId) {
+    SpreadsheetApp.getUi().alert('Missing projectId, datasetId, or tableId in Settings.');
+    return;
+  }
+
+  const fqTable = "`" + projectId + "." + datasetId + "." + tableId + "`";
+  const nDays = Math.max(1, parseFirstInteger(daysHuman, 2));
+
+  // 1. Build SQL - Pass itemsObject to all of them!
+  const sqlVariant = buildParamsExperimentVariantSqlPostHog(fqTable, nDays, exclParams, itemsObject);
+  const sqlValue   = buildParamsExperimentValueSqlPostHog(fqTable, nDays, exclParams, itemsObject);
+  const sqlFilter  = buildFilterFieldsSqlPostHog(fqTable, nDays, exclParams, allowRegex, projectId, datasetId, tableId, itemsObject);
+
+  // 2. Run Query
+  let pvar = runBQ(projectId, location, sqlVariant);
+  let pval = runBQ(projectId, location, sqlValue);
+  const filt = runBQ(projectId, location, sqlFilter);
+
+  // 3. Defaults
+  const defaultVariant = readNamed('SettingsExperimentVariantString', '');
+  const defaultValueParam = readNamed('SettingsExperimentEventValueParameter', '');
+
+  pvar = addDefaultToParamVariant(pvar, defaultVariant);
+  pval = addDefaultToParamValue(pval, defaultValueParam);
+
+  // 4. Write
+  writeTable('Lookup_Params_ExperimentVariant', pvar);
+  writeTable('Lookup_Params_ExperimentValue', pval);
+  writeTable('Lookup_Filter_Fields', filt);
+
+  SpreadsheetApp.getActive().toast(
+    'PostHog params refreshed · Fields: ' + filt.length,
+    'PostHog', 7
+  );
+}
+
+/** ===================== POSTHOG: SQL BUILDERS ===================== **/
+
+function buildEventsSqlPostHog(fqTable, nDays, excludeEvents) {
+  // PostHog uses 'event' column for event name, 'timestamp' for time
+  const ex = excludeEvents.length ? "AND event NOT IN UNNEST(" + arrLit(excludeEvents) + ")\n" : "";
+  
+  return `
+    SELECT event AS event_name
+    FROM ${fqTable}
+    WHERE DATE(timestamp) >= DATE_SUB(CURRENT_DATE(), INTERVAL ${nDays} DAY)
+    ${ex}
+    GROUP BY 1
+    ORDER BY 1
+  `;
+}
+
+function buildExperimentsSqlPostHog(fqTable, nDays, excludeEvents) {
+  const ex = excludeEvents.length ? "AND event NOT IN UNNEST(" + arrLit(excludeEvents) + ")\n" : "";
+
+  // Return standard events (for conversion) 
+  // + Feature Flags (which look like $feature/flag-name in properties)
+  return `
+    WITH raw_json AS (
+      SELECT TO_JSON_STRING(properties) as json_str
+      FROM ${fqTable}
+      WHERE DATE(timestamp) >= DATE_SUB(CURRENT_DATE(), INTERVAL ${nDays} DAY)
+    ),
+    flags AS (
+      SELECT DISTINCT key
+      FROM raw_json,
+      UNNEST(REGEXP_EXTRACT_ALL(json_str, r'"(\\$feature/[^"]+)":')) AS key
+    )
+    SELECT DISTINCT 'EVENT' AS experiment_source, event AS name
+    FROM ${fqTable}
+    WHERE DATE(timestamp) >= DATE_SUB(CURRENT_DATE(), INTERVAL ${nDays} DAY)
+    ${ex}
+    
+    UNION DISTINCT
+    
+    SELECT 'FEATURE_FLAG' AS experiment_source, key AS name
+    FROM flags
+
+    ORDER BY 1, 2
+  `;
+}
+
+function buildParamsExperimentVariantSqlPostHog(fqTable, nDays, excludeParams, itemsObject) {
+  const itemsKey = itemsObject ? itemsObject.trim() : "products";
+  
+  // FIX: Changed 'k' to 'parameter_name' to match the final select alias
+  const excludeSql = excludeParams.length 
+    ? `AND parameter_name NOT IN UNNEST(${arrLit(excludeParams)})` 
+    : "";
+
+  return `
+    CREATE TEMP FUNCTION getKeys(json_str STRING, target_array_name STRING)
+    RETURNS ARRAY<STRING>
+    LANGUAGE js AS """
+      if (!json_str) return [];
+      try {
+        var obj = JSON.parse(json_str);
+        var keys = [];
+        for (var key in obj) {
+          var val = obj[key];
+          if (key === target_array_name && Array.isArray(val) && val.length > 0) {
+            var itemObj = val[0]; 
+            if (itemObj && typeof itemObj === 'object') {
+              for (var subKey in itemObj) keys.push(key + "." + subKey);
+            }
+          } else {
+             keys.push(key);
+          }
+        }
+        return keys;
+      } catch (e) { return []; }
+    """;
+
+    WITH raw_data AS (
+      SELECT TO_JSON_STRING(properties) AS json_str 
+      FROM ${fqTable}
+      WHERE DATE(timestamp) >= DATE_SUB(CURRENT_DATE(), INTERVAL ${nDays} DAY)
+    ),
+    extracted_keys AS (
+      SELECT DISTINCT k AS parameter_name, 'EVENT' AS parameter_scope
+      FROM raw_data,
+      UNNEST(getKeys(json_str, '${itemsKey}')) k
+    )
+    SELECT * FROM extracted_keys
+    WHERE parameter_name IS NOT NULL AND parameter_name != ''
+    ${excludeSql}
+    ORDER BY 1
+  `;
+}
+
+function buildFilterFieldsSqlPostHog(fqTable, nDays, excludeParams, allowRegex, projectId, datasetId, tableId, itemsObject) {
+  const itemsKey = itemsObject ? itemsObject.trim() : "products";
+  
+  const excludeSql = excludeParams.length 
+    ? `WHERE name NOT IN UNNEST(${arrLit(excludeParams)})` 
+    : "";
+
+  const regexCondition = allowRegex 
+    ? `AND REGEXP_CONTAINS(field_path, r'${allowRegex}')` 
+    : "AND FALSE"; 
+
+  return `
+    CREATE TEMP FUNCTION getKeys(json_str STRING, target_array_name STRING)
+    RETURNS ARRAY<STRING>
+    LANGUAGE js AS """
+      if (!json_str) return [];
+      try {
+        var obj = JSON.parse(json_str);
+        var keys = [];
+        for (var key in obj) {
+          var val = obj[key];
+          if (key === target_array_name && Array.isArray(val) && val.length > 0) {
+            var itemObj = val[0]; 
+            if (itemObj && typeof itemObj === 'object') {
+              for (var subKey in itemObj) keys.push(key + "." + subKey);
+            }
+          } else {
+             keys.push(key);
+          }
+        }
+        return keys;
+      } catch (e) { return []; }
+    """;
+
+    WITH raw_data AS (
+      SELECT TO_JSON_STRING(properties) AS json_str
+      FROM ${fqTable}
+      WHERE DATE(timestamp) >= DATE_SUB(CURRENT_DATE(), INTERVAL ${nDays} DAY)
+    ),
+    json_keys AS (
+      /* FIX: Swapped column order here so filter_type is first, name is second */
+      SELECT DISTINCT 'Event' as filter_type, k as name
+      FROM raw_data,
+      UNNEST(getKeys(json_str, '${itemsKey}')) k
+      WHERE k IS NOT NULL AND k != ''
+    ),
+    filtered_json_keys AS (
+      SELECT * FROM json_keys
+      ${excludeSql}
+    ),
+    col_keys AS (
+      /* FIX: Swapped column order here as well */
+      SELECT DISTINCT 'Column' as filter_type, field_path as name
+      FROM \`${projectId}.${datasetId}\`.INFORMATION_SCHEMA.COLUMN_FIELD_PATHS
+      WHERE table_name = '${tableId}'
+      ${regexCondition}
+    )
+    SELECT filter_type, name 
+    FROM filtered_json_keys
+    UNION DISTINCT
+    SELECT filter_type, name 
+    FROM col_keys
+    ORDER BY filter_type, name
+  `;
+}
+
+function buildParamsExperimentValueSqlPostHog(fqTable, nDays, excludeParams, itemsObject) {
+  const itemsKey = itemsObject ? itemsObject.trim() : "products";
+  
+  // FIX: Changed 'k' to 'parameter_name' to match the final select alias
+  const excludeSql = excludeParams.length 
+    ? `AND parameter_name NOT IN UNNEST(${arrLit(excludeParams)})` 
+    : "";
+
+  return `
+    CREATE TEMP FUNCTION getNumericKeys(json_str STRING, target_array_name STRING)
+    RETURNS ARRAY<STRING>
+    LANGUAGE js AS """
+      if (!json_str) return [];
+      try {
+        var obj = JSON.parse(json_str);
+        var keys = [];
+        for (var key in obj) {
+          var val = obj[key];
+          if (key === target_array_name && Array.isArray(val) && val.length > 0) {
+            var itemObj = val[0]; 
+            if (itemObj && typeof itemObj === 'object') {
+              for (var subKey in itemObj) {
+                if (typeof itemObj[subKey] === 'number') {
+                  keys.push(key + "." + subKey);
+                }
+              }
+            }
+          } else {
+             if (typeof val === 'number') {
+               keys.push(key);
+             }
+          }
+        }
+        return keys;
+      } catch (e) { return []; }
+    """;
+
+    WITH raw_data AS (
+      SELECT TO_JSON_STRING(properties) AS json_str
+      FROM ${fqTable}
+      WHERE DATE(timestamp) >= DATE_SUB(CURRENT_DATE(), INTERVAL ${nDays} DAY)
+    ),
+    extracted_keys AS (
+      SELECT DISTINCT k AS parameter_name
+      FROM raw_data,
+      UNNEST(getNumericKeys(json_str, '${itemsKey}')) k
+    )
+    SELECT * FROM extracted_keys
+    WHERE parameter_name IS NOT NULL AND parameter_name != ''
+    ${excludeSql}
+    ORDER BY 1
   `;
 }

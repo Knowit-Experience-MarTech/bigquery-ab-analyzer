@@ -14,12 +14,11 @@
  * limitations under the License.
  */
 
- ----------------------------------------------------------------------------------------------------------------------------
-  -- Replace "your_project.your_dataset.deduplicated_EVENTS_1234" with your project, data set and deduplicated table function
-  -- Replace "your_project" with your project
-
+ ----------------------------------------------------------------------------
+  -- Replace "your_project" with your actual project ID
+  -- Replace "posthog" with your actual dataset
   -- CHECK REGION: Replace 'region-eu' with 'region-us' if your data is in US
- ----------------------------------------------------------------------------------------------------------------------------
+----------------------------------------------------------------------------
 
 -- We use a Temp Function to perfectly format BigQuery JSON paths. 
 -- It uses standard dot notation ($.key) for normal text, and safely wraps special characters ($."$key").
@@ -38,74 +37,67 @@ begin
   ---------------------------------------------------------------------------
   -- (0) Top-level declarations
   ---------------------------------------------------------------------------
-  declare user_count                int64   default 0;
-  declare conversion_count          int64   default 0;
-  declare total_conversion_value    float64 default 0.0;
+  declare user_count              int64   default 0;
+  declare conversion_count        int64   default 0;
+  declare total_conversion_value  float64 default 0.0;
   declare total_conversion_sq_value float64 default 0.0;
   
-  declare dyn_sql                   string  default "";
+  declare dyn_sql                 string  default "";
+  declare sql_header              string  default "";
+  declare sql_logic               string  default "";
+  declare sql_footer              string  default "";
+
+  declare exp_filter              string  default "";
+  declare conv_filter             string  default "";
   
-  -- Structural variables
-  declare sql_header                string  default "";
-  declare sql_logic                 string  default "";
-  declare sql_footer                string  default "";
-
-  declare exp_filter                string  default "";
-  declare conv_filter               string  default "";
+  -- UPDATE THIS TO YOUR POSTHOG TABLE
+  declare events_table            string  default 'your_project.posthog.events'; 
   
-  -- UPDATE THIS TABLE NAME:
-  declare events_table              string  default 'your_project.amplitude.deduplicated_EVENTS_1234'; 
-  
-  declare id_expr                   string  default 'device_id';
-  declare id_predicate              string  default "device_id is not null and device_id != ''";
-  declare id_filter                 string  default '';
-  declare conv_side_sql             string;
-  declare value_expr                string  default 'null';
+  declare id_expr                 string  default 'distinct_id';
+  declare id_predicate            string  default "distinct_id is not null";
+  declare id_filter               string  default '';
+  declare conv_side_sql           string  default '';
+  declare value_expr              string  default 'null';
 
-  declare exposure_guard            string  default '';
-  declare variant_key               string  default '';
+  declare exposure_guard          string  default '';
+  declare variant_key             string  default '';
 
-  declare variant_json_path         string  default '';
-  declare value_json_path           string  default '';
+  declare variant_json_path       string  default '';
+  declare value_json_path         string  default '';
 
-  declare has_variant_key           bool    default false;
-  declare extracted_variant_expr    string  default 'null'; 
-  declare where_variant_expr        string  default 'null'; 
+  declare has_variant_key         bool    default false;
+  declare extracted_variant_expr  string  default 'null'; 
+  declare where_variant_expr      string  default 'null'; 
 
-  declare is_exclude                bool    default false;
-  declare norm_path                 string  default '';
-  declare has_dot                   bool    default false;
-  declare dotq_path                 string  default '';
-  declare json_event_expr           string  default '';
-  declare json_user_expr            string  default '';
+  declare is_exclude              bool    default false;
+  declare norm_path               string  default '';
+  declare has_dot                 bool    default false;
+  declare dotq_path               string  default '';
+  declare json_prop_expr          string  default '';
 
-  -- Nested Array Processing Variables
-  declare parent_key                string  default '';
-  declare child_key                 string  default '';
-  declare val_norm_path             string  default '';
-  declare val_parent_key            string  default '';
-  declare val_child_key             string  default '';
-  declare val_child_path            string  default '';
-  declare val_q_parent              string  default '';
-  declare val_q_child               string  default '';
-  declare val_q_full                string  default '';
+  declare val_parent_key          string  default '';
+  declare val_child_path          string  default '';
+  declare val_q_parent            string  default '';
+  declare val_q_child             string  default '';
+  declare val_q_full              string  default '';
 
-  declare query_info_logging        bool default false;
-  declare query_price_per_tib       float64;
+  declare query_info_logging      bool default false;
+  declare query_price_per_tib     float64;
 
   declare ai_summary_activated    bool default false; 
   declare ai_prompt               string default '';
 
-  declare is_amplitude bool default (
+  -- CHECK FOR POSTHOG EXPERIMENTS
+  declare is_posthog bool default (
     select exists(
       select 1 
       from `your_project.bigquery_ab_analyzer.experiments` 
       where analyze_test = true
-        and analytics_tool = 'AMPLITUDE'
+        and analytics_tool = 'POSTHOG'
     )
   );
 
-  if is_amplitude then 
+  if is_posthog then 
 
     set (
       query_info_logging,
@@ -137,10 +129,11 @@ begin
         '-- If it is greater than 30 days: DO NOT recommend letting it run. Instead, explicitly warn the audience that the site lacks sufficient daily traffic to reach statistical significance in a reasonable timeframe (under 30 days), and recommend either aborting the test or re-evaluating the traffic allocation strategy.'
       );
     end if;
+  
+    ----------------------------------------------------------------------------
+    -- (2) Create TEMP tables for final results
+    ----------------------------------------------------------------------------
 
-  ---------------------------------------------------------------------------
-  -- (2) Temp result table
-  ---------------------------------------------------------------------------
     -- 1. Create a temporary buffer to hold costs while looping
     if query_info_logging then
       create or replace temp table bigquery_ab_analyzer_query_information_buffer (
@@ -149,7 +142,7 @@ begin
         bytes_billed int64
       );
     end if;
-  
+
     create temp table results (
       id                     string,
       variant                string,
@@ -170,51 +163,31 @@ begin
     ---------------------------------------------------------------------------
     for rec in (
       select
-        id,
-        variant,
-        variant_name,
-        date_start,
-        date_end,
-        experiment_event_name,       
-        experiment_variant_parameter,
-        exp_variant_string,          
-        conversion_event,            
-        scope,                       
-        identity_source,             
-        user_overlap,                
-        experiment_event_value_parameter,
-        conversion_count_all,
-        date_comparison
+        id, variant, variant_name, date_start, date_end, experiment_event_name,       
+        experiment_variant_parameter, exp_variant_string, conversion_event,            
+        scope, identity_source, user_overlap, experiment_event_value_parameter,
+        conversion_count_all, date_comparison
       from `your_project.bigquery_ab_analyzer.experiments`
       where analyze_test = true
-        and analytics_tool = 'AMPLITUDE' 
+        and analytics_tool = 'POSTHOG' 
     ) do
 
     -------------------------------------------------------------------------
-    -- Identity logic (Amplitude)
+    -- Identity logic (PostHog)
     -------------------------------------------------------------------------
     if rec.scope = "User" then
-      if rec.identity_source = "USER_ID_ONLY" then
-        set id_expr = "user_id";
-        set id_predicate = "user_id is not null and user_id != ''";
-        set id_filter = " and user_id is not null and user_id != ''";
-      elseif rec.identity_source = "USER_ID_OR_DEVICE_ID" then
-        set id_expr = "coalesce(nullif(user_id, ''), device_id)";
-        set id_predicate = "(user_id is not null and user_id != '' or (device_id is not null and device_id != ''))";
-        set id_filter = ""; 
-      else  -- DEVICE_ID
-        set id_expr = "device_id";
-        set id_predicate = "device_id is not null and device_id != ''";
+        -- Default PostHog user identity
+        set id_expr = "distinct_id";
+        set id_predicate = "distinct_id is not null and distinct_id != ''";
         set id_filter = "";
-      end if;
     else
       -- Session scope
-      set id_expr = "device_id";
-      set id_predicate = "device_id is not null and device_id != '' and session_id is not null";
+      -- Grouping Key: distinct_id + $session_id
+      set id_expr = "distinct_id";
+      set id_predicate = """distinct_id is not null and distinct_id != '' and (json_value(properties, '$."$session_id"') is not null)""";
       set id_filter = "";
     end if;
 
-    -- Reset structural variables
     set exp_filter  = "";
     set conv_filter = "";
     set sql_header = "";
@@ -222,36 +195,37 @@ begin
     set sql_footer = "";
     set dyn_sql = "";
 
-    -- Exposure guard and variant path
     set variant_key = rec.experiment_variant_parameter;
-    set exposure_guard = concat(" and event_type = '", rec.experiment_event_name, "'");
+    set exposure_guard = concat(" and event = '", rec.experiment_event_name, "'");
 
     set has_variant_key = length(trim(coalesce(variant_key,''))) > 0;
 
-    -- UPDATED: Detect if variant key is nested in an array or a top-level property
+    -- VARIANT EXTRACTION (CLEAN JSON PATHS)
     if has_variant_key then
       set norm_path = trim(regexp_replace(trim(variant_key), r'\s*\.\s*', '.'), '.');
       set has_dot = regexp_contains(norm_path, r'\.');
 
       if has_dot then
-        set parent_key = split(norm_path, '.')[offset(0)];
-        set child_key = substr(norm_path, length(parent_key) + 2);
-        
-        set val_q_parent = format_bq_json_path(parent_key);
-        set val_q_child = format_bq_json_path(child_key);
+        set val_parent_key = split(norm_path, '.')[offset(0)];
+        set val_child_path = substr(norm_path, length(val_parent_key) + 2);
+
+        set val_q_parent = format_bq_json_path(val_parent_key);
+        set val_q_child = format_bq_json_path(val_child_path);
+        set val_q_full = format_bq_json_path(norm_path);
 
         set extracted_variant_expr = concat(
-          "coalesce((select json_value(item, '", val_q_child, "') from unnest(json_extract_array(a.event_properties, '", val_q_parent, "')) as item limit 1), ",
-          "(select json_value(item, '", val_q_child, "') from unnest(json_extract_array(a.user_properties, '", val_q_parent, "')) as item limit 1))"
+          "coalesce(json_value(a.properties, '", val_q_full, "'), ",
+          "(select json_value(_item, '", val_q_child, "') from unnest(json_extract_array(a.properties, '", val_q_parent, "')) as _item limit 1))"
         );
+
         set where_variant_expr = concat(
-          "coalesce((select json_value(item, '", val_q_child, "') from unnest(json_extract_array(event_properties, '", val_q_parent, "')) as item limit 1), ",
-          "(select json_value(item, '", val_q_child, "') from unnest(json_extract_array(user_properties, '", val_q_parent, "')) as item limit 1))"
+          "coalesce(json_value(properties, '", val_q_full, "'), ",
+          "(select json_value(_item, '", val_q_child, "') from unnest(json_extract_array(properties, '", val_q_parent, "')) as _item limit 1))"
         );
       else
         set variant_json_path = format_bq_json_path(norm_path);
-        set extracted_variant_expr = concat("coalesce(json_value(a.event_properties, '", variant_json_path, "'), json_value(a.user_properties, '", variant_json_path, "'))");
-        set where_variant_expr = concat("coalesce(json_value(event_properties, '", variant_json_path, "'), json_value(user_properties, '", variant_json_path, "'))");
+        set extracted_variant_expr = concat("json_value(a.properties, '", variant_json_path, "')");
+        set where_variant_expr = concat("json_value(properties, '", variant_json_path, "')");
       end if;
     else
       set extracted_variant_expr = "null";
@@ -266,13 +240,11 @@ begin
       from `your_project.bigquery_ab_analyzer.experiments_filters`
       where id = rec.id and variant = rec.variant
     ) do
-    
       set is_exclude = false;
       set norm_path = '';
       set has_dot = false;
       set dotq_path = '';
-      set json_event_expr = '';
-      set json_user_expr = '';
+      set json_prop_expr = '';
 
       set is_exclude = upper(f.filter_type) = 'EXCLUDE';
       set norm_path = trim(regexp_replace(trim(f.filter_field), r'\s*\.\s*', '.'), '.');
@@ -280,57 +252,40 @@ begin
       if norm_path != '' then
         set has_dot = regexp_contains(norm_path, r'\.');
 
-        -- UPDATED: Dynamic handling for Nested Item Array Filtering vs Top Level JSON
-        if has_dot then
-          set parent_key = split(norm_path, '.')[offset(0)];
-          set child_key = substr(norm_path, length(parent_key) + 2);
+        if upper(f.filter_scope) != 'COLUMN' then
+           -- EVENT PROPERTY LOGIC
+           if has_dot then
+              set val_parent_key = split(norm_path, '.')[offset(0)];
+              set val_child_path = substr(norm_path, length(val_parent_key) + 2);
 
-          set val_q_parent = format_bq_json_path(parent_key);
-          set val_q_child = format_bq_json_path(child_key);
+              set val_q_parent = format_bq_json_path(val_parent_key);
+              set val_q_child = format_bq_json_path(val_child_path);
+              set val_q_full = format_bq_json_path(norm_path);
 
-          set json_event_expr = concat(
-            "(select count(1) > 0 from unnest(json_extract_array(event_properties, '", val_q_parent, "')) as item where regexp_contains(coalesce(json_value(item, '", val_q_child, "'), ''), r'", f.filter_value, "'))"
-          );
-          set json_user_expr = concat(
-            "(select count(1) > 0 from unnest(json_extract_array(user_properties, '", val_q_parent, "')) as item where regexp_contains(coalesce(json_value(item, '", val_q_child, "'), ''), r'", f.filter_value, "'))"
-          );
-        else
-          set dotq_path = format_bq_json_path(norm_path);
+              set json_prop_expr = concat(
+                "(regexp_contains(coalesce(json_value(properties, '", val_q_full, "'), ''), r'", f.filter_value, "') ",
+                "OR exists(select 1 from unnest(json_extract_array(properties, '", val_q_parent, "')) as _item ",
+                "where regexp_contains(coalesce(json_value(_item, '", val_q_child, "'), ''), r'", f.filter_value, "')))"
+              );
+           else
+              set dotq_path = format_bq_json_path(norm_path);
+              set json_prop_expr = concat("regexp_contains(coalesce(json_value(properties, '", dotq_path, "'), ''), r'", f.filter_value, "')");
+           end if;
 
-          set json_event_expr = concat("regexp_contains(coalesce(json_value(event_properties, '", dotq_path, "'), ''), r'", f.filter_value, "')");
-          set json_user_expr = concat("regexp_contains(coalesce(json_value(user_properties, '", dotq_path, "'), ''), r'", f.filter_value, "')");
-        end if;
-
-        if f.filter_scope = 'Event' then
-          if f.filter_on_value in ('Experiment Event','Both') then
-            set exp_filter = exp_filter || concat(' and ', case when is_exclude then 'not ' else '' end, json_event_expr);
-          end if;
-          if f.filter_on_value in ('Conversion Event','Both') then
-            set conv_filter = conv_filter || concat(' and ', case when is_exclude then 'not ' else '' end, json_event_expr);
-          end if;
-        elseif f.filter_scope = 'User' then
-          if f.filter_on_value in ('Experiment Event','Both') then
-            set exp_filter = exp_filter || concat(' and ', case when is_exclude then 'not ' else '' end, json_user_expr);
-          end if;
-          if f.filter_on_value in ('Conversion Event','Both') then
-            set conv_filter = conv_filter || concat(' and ', case when is_exclude then 'not ' else '' end, json_user_expr);
-          end if;
-        elseif upper(f.filter_scope) = 'COLUMN' then
-          if has_dot then
-             if f.filter_on_value in ('Experiment Event','Both') then
-               set exp_filter = exp_filter || concat(' and ', case when is_exclude then 'not ' else '' end, json_event_expr);
-             end if;
-             if f.filter_on_value in ('Conversion Event','Both') then
-               set conv_filter = conv_filter || concat(' and ', case when is_exclude then 'not ' else '' end, json_event_expr);
-             end if;
-          else
-             if f.filter_on_value in ('Experiment Event','Both') then
-               set exp_filter = exp_filter || concat(' and ', case when is_exclude then 'not ' else '' end, "regexp_contains(coalesce(cast(", norm_path, " as string), ''), r'", f.filter_value, "')");
-             end if;
-             if f.filter_on_value in ('Conversion Event','Both') then
-               set conv_filter = conv_filter || concat(' and ', case when is_exclude then 'not ' else '' end, "regexp_contains(coalesce(cast(", norm_path, " as string), ''), r'", f.filter_value, "')");
-             end if;
-          end if;
+           if f.filter_on_value in ('Experiment Event','Both') then
+             set exp_filter = exp_filter || concat(' and ', case when is_exclude then 'not ' else '' end, json_prop_expr);
+           end if;
+           if f.filter_on_value in ('Conversion Event','Both') then
+             set conv_filter = conv_filter || concat(' and ', case when is_exclude then 'not ' else '' end, json_prop_expr);
+           end if;
+        else 
+           -- COLUMN LOGIC (UNCHANGED)
+           if f.filter_on_value in ('Experiment Event','Both') then
+             set exp_filter = exp_filter || concat(' and ', case when is_exclude then 'not ' else '' end, "regexp_contains(coalesce(cast(", norm_path, " as string), ''), r'", f.filter_value, "')");
+           end if;
+           if f.filter_on_value in ('Conversion Event','Both') then
+             set conv_filter = conv_filter || concat(' and ', case when is_exclude then 'not ' else '' end, "regexp_contains(coalesce(cast(", norm_path, " as string), ''), r'", f.filter_value, "')");
+           end if;
         end if;
       end if; 
     end for;
@@ -344,47 +299,61 @@ begin
     if rec.experiment_event_value_parameter is null or trim(rec.experiment_event_value_parameter) = '' then
       set value_expr = 'null';
     else
-      set val_norm_path = trim(regexp_replace(trim(rec.experiment_event_value_parameter), r'\s*\.\s*', '.'), '.');
-      
-      if regexp_contains(val_norm_path, r'\.') then
-         set val_parent_key = split(val_norm_path, '.')[offset(0)];
-         set val_child_path = substr(val_norm_path, length(val_parent_key) + 2);
-         
-         set val_q_parent = format_bq_json_path(val_parent_key);
-         set val_q_child = format_bq_json_path(val_child_path);
+      set norm_path = trim(regexp_replace(trim(rec.experiment_event_value_parameter), r'\s*\.\s*', '.'), '.');
+      set has_dot = regexp_contains(norm_path, r'\.');
 
-         set value_expr = concat("(select sum(safe_cast(json_value(item, '", val_q_child, "') as float64)) from unnest(json_extract_array(event_properties, '", val_q_parent, "')) as item)");
+      if has_dot then
+        set val_parent_key = split(norm_path, '.')[offset(0)];
+        set val_child_path = substr(norm_path, length(val_parent_key) + 2);
+
+        set val_q_parent = format_bq_json_path(val_parent_key);
+        set val_q_child = format_bq_json_path(val_child_path);
+        set val_q_full = format_bq_json_path(norm_path);
+
+        -- Supports pulling sum of prices from arrays (e.g., products)
+        set value_expr = concat(
+          "coalesce(",
+            "safe_cast(json_value(properties, '", val_q_full, "') as float64), ",
+            "(select sum(safe_cast(json_value(_item, '", val_q_child, "') as float64)) from unnest(json_extract_array(properties, '", val_q_parent, "')) as _item)",
+          ")"
+        );
       else
-         set value_json_path = format_bq_json_path(val_norm_path);
-         set value_expr = concat("safe_cast(json_value(event_properties, '", value_json_path, "') as float64)");
+        set value_json_path = format_bq_json_path(norm_path);
+        set value_expr = concat("safe_cast(json_value(properties, '", value_json_path, "') as float64)");
       end if;
     end if;
 
     -------------------------------------------------------------------------
-    -- (4e) Conversion-side CTE
+    -- (4e) Conversion-side CTE (PostHog: 'event' column, 'timestamp' column)
     -------------------------------------------------------------------------
     if rec.conversion_count_all then
       set conv_side_sql = format("""
         , conv_side as (
           select
-            case when upper(trim('%s')) = 'USER' then %s else concat(device_id, cast(session_id as string)) end as grouping_key,
-            event_time as conv_time,
+            case when upper(trim('%s')) = 'USER' then %s 
+                 else concat(distinct_id, coalesce(json_value(properties, '$."$session_id"'), '')) 
+            end as grouping_key,
+            timestamp as conv_time,
             %s as conv_value,
             1 as conv_count
-          from `%s`(date '%s', date '%s')
-          where %s and event_type = '%s' %s
+          from `%s`
+          where date(timestamp) between date '%s' and date '%s' 
+            and %s and event = '%s' %s
         )
       """, rec.scope, id_expr, value_expr, events_table, format_date('%Y-%m-%d', rec.date_start), format_date('%Y-%m-%d', rec.date_end), id_predicate, rec.conversion_event, conv_filter);
     else
       set conv_side_sql = format("""
         , conv_side as (
           select
-            case when upper(trim('%s')) = 'USER' then %s else concat(device_id, cast(session_id as string)) end as grouping_key,
-            min(event_time) as conv_time,
+            case when upper(trim('%s')) = 'USER' then %s 
+                 else concat(distinct_id, coalesce(json_value(properties, '$."$session_id"'), '')) 
+            end as grouping_key,
+            min(timestamp) as conv_time,
             sum(%s) as conv_value,
             1 as conv_count
-          from `%s`(date '%s', date '%s')
-          where %s and event_type = '%s' %s
+          from `%s`
+          where date(timestamp) between date '%s' and date '%s' 
+            and %s and event = '%s' %s
           group by grouping_key
         )
       """, rec.scope, id_expr, value_expr, events_table, format_date('%Y-%m-%d', rec.date_start), format_date('%Y-%m-%d', rec.date_end), id_predicate, rec.conversion_event, conv_filter);
@@ -393,14 +362,13 @@ begin
     -------------------------------------------------------------------------
     -- (5) User overlap branches
     -------------------------------------------------------------------------
-
-    -- Shared Header
     if rec.user_overlap in ('First Exposure', 'Last Exposure', 'Exclude') then
       set sql_header = format("""
         with all_events as (
           select *
-          from `%s`(date '%s', date '%s')
-          where %s
+          from `%s`
+          where date(timestamp) between date '%s' and date '%s'
+            and %s
         ),
         extracted as (
           select a.*, %s as variant_value
@@ -409,12 +377,12 @@ begin
         exposures_all as (
           select
             case when upper(trim('%s')) = 'USER' then %s
-              else concat(device_id, cast(session_id as string))
+                 else concat(distinct_id, coalesce(json_value(properties, '$."$session_id"'), ''))
             end as grouping_key,
-            event_time as exposure_time,
+            timestamp as exposure_time,
             trim(coalesce(variant_value,'')) as variant
           from extracted
-          where event_type = '%s'
+          where event = '%s'
             %s
         ),
         exposures_labeled as (
@@ -468,27 +436,20 @@ begin
     elseif rec.user_overlap = "Last Exposure" then
       set sql_logic = format("""
         , exposures_last_ranked as (
-           select 
-             grouping_key, 
-             variant, 
-             exposure_time,
-             -- Rank exposures by time descending (latest first)
+           select grouping_key, variant, exposure_time,
              row_number() over (partition by grouping_key order by exposure_time desc) as rn
            from exposures_labeled
         ),
         exposures_filtered as (
-           select 
-             grouping_key, 
-             exposure_time
+           select grouping_key, exposure_time
            from exposures_last_ranked
-           where rn = 1 -- Keep ONLY the very last variant this user saw
+           where rn = 1 
              and regexp_contains(trim(variant), r'%s')
         )
-        %s, -- This inserts the conv_side_sql CTE
+        %s, 
         joined as (
           select
-            e.grouping_key, e.exposure_time,
-            c.conv_time, c.conv_value, c.conv_count
+            e.grouping_key, e.exposure_time, c.conv_time, c.conv_value, c.conv_count
           from exposures_filtered e
           join conv_side c using (grouping_key)
           where c.conv_time >= e.exposure_time
@@ -546,17 +507,18 @@ begin
       set sql_header = format("""
         with all_events as (
           select *
-          from `%s`(date '%s', date '%s')
-          where %s
+          from `%s`
+          where date(timestamp) between date '%s' and date '%s'
+            and %s
         ),
         exposures as (
           select
             case when upper(trim('%s')) = 'USER' then %s
-              else concat(device_id, cast(session_id as string))
+                 else concat(distinct_id, coalesce(json_value(properties, '$."$session_id"'), ''))
             end as grouping_key,
-            min(event_time) as exposure_time
+            min(timestamp) as exposure_time
           from all_events
-          where event_type = '%s'
+          where event = '%s'
             and regexp_contains(%s, r'%s')
             %s
           group by grouping_key
@@ -575,9 +537,7 @@ begin
         rec.experiment_event_name, where_variant_expr, rec.exp_variant_string, exp_filter,
         conv_side_sql
       );
-      
       set sql_logic = "";
-
       set sql_footer = """
         select
           (select count(*) from exposures) as user_count,
@@ -595,17 +555,9 @@ begin
     if dyn_sql is not null and length(dyn_sql) > 0 then
       execute immediate dyn_sql into user_count, conversion_count, total_conversion_value, total_conversion_sq_value;
 
-        ----------------------------------------------------------------------------
-        -- Stores 1 row per variant run
-        -- CHECK REGION: Replace 'region-eu' with 'region-us' if your data is in US
-        ----------------------------------------------------------------------------
-
         if query_info_logging then
           insert into bigquery_ab_analyzer_query_information_buffer (id, job_id, bytes_billed)
-          select
-            rec.id,
-            job_id,
-            total_bytes_billed
+          select rec.id, job_id, total_bytes_billed
           from `region-eu`.INFORMATION_SCHEMA.JOBS_BY_USER
           where job_id = @@last_job_id;
         end if;

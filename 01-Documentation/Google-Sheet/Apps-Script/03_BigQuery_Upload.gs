@@ -124,6 +124,98 @@ function confirmQueries() {
 /*********************************************************
  * MAIN EXPORT FUNCTION: BUILD CSV, LOAD WITH WRITE_TRUNCATE
  *********************************************************/
+ function exportSettingsToBigQuery() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  
+  console.log("1. Starting settings export...");
+  
+  // SAFE FETCHER: Prevents the script from crashing if a Named Range is misspelled or missing
+  function getSafeVal(rangeName, defaultVal) {
+    const range = ss.getRangeByName(rangeName);
+    if (!range) {
+      console.error(`ERROR: Named range '${rangeName}' not found in the spreadsheet!`);
+      throw new Error(`Named range '${rangeName}' is missing.`);
+    }
+    return range.getValue();
+  }
+
+  console.log("2. Fetching named ranges...");
+  const projectId = getSafeVal("SettingsBigQueryProjectID", "");
+  const datasetId = getSafeVal("SettingsBigQueryExperimentsDataSetID", "");
+  const settingsTable = "settings"; 
+
+  const queryLogging = getSafeVal("SettingsQueryInformationCheckbox", false);
+  const queryPrice = getSafeVal("SettingsQueryPricePerTiB", 0);
+  const aiActivated = getSafeVal("SettingsAISummary", false);
+  const aiPrompt = getSafeVal("SettingsAIPrompt", "");
+
+  console.log("3. Formatting values...");
+  
+  // Bulletproof String conversion (prevents crashes if the cell is blank or a number)
+  const safeAiPrompt = String(aiPrompt || "")
+    .replace(/\\/g, "\\\\") // 1. Escape any existing backslashes first
+    .replace(/'/g, "\\'")   // 2. Escape single quotes
+    .replace(/\n/g, "\\n")  // 3. Escape newlines (This fixes your error!)
+    .replace(/\r/g, "");    // 4. Remove carriage returns just to be safe
+  
+  // Bulletproof Boolean conversion (handles actual checkboxes OR text like "TRUE")
+  const isLogging = (String(queryLogging).trim().toUpperCase() === 'TRUE' || queryLogging === true);
+  const isAiOn = (String(aiActivated).trim().toUpperCase() === 'TRUE' || aiActivated === true);
+
+  console.log("4. Building query...");
+  const targetTable = `\`${projectId}.${datasetId}.${settingsTable}\``;
+  
+  const mergeQuery = `
+    MERGE ${targetTable} AS target
+    USING (
+      SELECT 
+        ${isLogging ? 'TRUE' : 'FALSE'} AS query_information_logging,
+        ${Number(queryPrice) || 0} AS query_price_per_tib,
+        ${isAiOn ? 'TRUE' : 'FALSE'} AS ai_summary_activated,
+        '${safeAiPrompt}' AS ai_prompt
+    ) AS source
+    ON TRUE 
+
+    WHEN MATCHED THEN
+      UPDATE SET
+        query_information_logging = source.query_information_logging,
+        query_price_per_tib = source.query_price_per_tib,
+        ai_summary_activated = source.ai_summary_activated,
+        ai_prompt = source.ai_prompt
+
+    WHEN NOT MATCHED THEN
+      INSERT (
+        query_information_logging,
+        query_price_per_tib,
+        ai_summary_activated,
+        ai_prompt
+      ) 
+      VALUES (
+        source.query_information_logging,
+        source.query_price_per_tib,
+        source.ai_summary_activated,
+        source.ai_prompt
+      )
+  `;
+
+  console.log("5. Executing query in BigQuery...");
+  console.log(mergeQuery);
+  
+  try {
+    runQuery(projectId, mergeQuery, 'MERGE settings');
+    console.log("6. Query successful!");
+    SpreadsheetApp.getActive().toast(
+      'AI Summary Settings uploaded to BigQuery.'
+    );
+    return "Settings upsert complete.";
+  } catch (e) {
+    console.error("BigQuery Execution Error:", e.message);
+    SpreadsheetApp.getUi().alert("BigQuery Error: " + e.message);
+    throw e;
+  }
+}
+
+
 function exportExperimentsToBigQuery() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const sheet = ss.getSheetByName(experimentSheetName);
@@ -139,6 +231,10 @@ function exportExperimentsToBigQuery() {
   ensureDatasetWithLocation(projectId, datasetId, datasetLoc);
 
   const flat = flatten2RowBlocks(sheet); // now emits Yes+Update rows and export_mode
+
+  // HALT IF REGEX IS BROKEN
+  if (flat && flat.error) return "Export aborted due to RegEx error.";
+
   const rows = flat.valid;
   if (flat.skipped.length) {
     SpreadsheetApp.getUi().alert("Some experiments were skipped:\n\n" + flat.skipped.join("\n"));
@@ -151,7 +247,7 @@ function exportExperimentsToBigQuery() {
     "analyze_test","event_value_test","hypothesis","confidence","description",
     "scope","identity_source","experiment_event_name","experiment_variant_parameter",
     "experiment_event_value_parameter","user_overlap",
-    "export_mode", "analytics_tool", "query_information_logging", "query_price_per_tib"
+    "export_mode", "analytics_tool", "ai_total_target_sample"
   ];
   const csv = rows.map(r => cols.map(c => toCsvCell(r[c])).join(",")).join("\n");
   const blob = Utilities.newBlob(csv, "application/octet-stream", "experiments_stage.csv");
@@ -188,8 +284,7 @@ function exportExperimentsToBigQuery() {
         { name: "user_overlap", type: "STRING" },
         { name: "export_mode", type: "STRING" },
         { name: "analytics_tool", type: "STRING" },
-        { name: "query_information_logging", type: "BOOL" },
-        { name: "query_price_per_tib", type: "FLOAT64" }
+        { name: "ai_total_target_sample", type: "INT64" }
       ]}
     }}
   };
@@ -225,8 +320,7 @@ function exportExperimentsToBigQuery() {
     experiment_event_value_parameter= S.experiment_event_value_parameter,
     user_overlap = S.user_overlap,
     analytics_tool = S.analytics_tool,
-    query_information_logging = S.query_information_logging,
-    query_price_per_tib = S.query_price_per_tib
+    ai_total_target_sample = S.ai_total_target_sample
   WHEN MATCHED AND UPPER(TRIM(S.export_mode)) = 'UPDATE' THEN UPDATE SET
     experiment_name = S.experiment_name,
     variant_name = S.variant_name,
@@ -239,12 +333,12 @@ function exportExperimentsToBigQuery() {
     id,variant,date_start,date_end,date_comparison,experiment_name,variant_name,
     conversion_event,conversion_count_all, exp_variant_string,analyze_test,event_value_test,hypothesis,confidence,
     description,scope,identity_source,experiment_event_name,experiment_variant_parameter,
-    experiment_event_value_parameter,user_overlap, analytics_tool, query_information_logging, query_price_per_tib
+    experiment_event_value_parameter,user_overlap, analytics_tool, ai_total_target_sample
   ) VALUES (
     S.id,S.variant,S.date_start,S.date_end,S.date_comparison,S.experiment_name,S.variant_name,
     S.conversion_event, S.conversion_count_all, S.exp_variant_string,S.analyze_test,S.event_value_test,S.hypothesis,S.confidence,
     S.description,S.scope,S.identity_source,S.experiment_event_name,S.experiment_variant_parameter,
-    S.experiment_event_value_parameter,S.user_overlap, S.analytics_tool, S.query_information_logging, S.query_price_per_tib
+    S.experiment_event_value_parameter,S.user_overlap, S.analytics_tool, S.ai_total_target_sample
   )`;
 
   // Kick the related exports
@@ -299,15 +393,6 @@ function exportExperimentsToBigQuery() {
 
 /***********************************************************
  * FLATTEN FUNCTION: 2-ROW BLOCKS WITH DATE COMPARISON SUPPORT
- * E and G are unmerged, crucial in BOTH rows
- * A,D,F,H,I,J,K,L,M are merged from top row only
- * If dateComparisonColumn (col D) is checked:
- *   - Variant A uses dates from top row (r)
- *   - Variant B uses dates from bottom row (r+1)
- *   - date_comparison = true for both rows
- * If unchecked:
- *   - Both variants use dates from top row (r)
- *   - date_comparison = false for both rows
  ***********************************************************/
 function flatten2RowBlocks(sheet) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
@@ -327,8 +412,6 @@ function flatten2RowBlocks(sheet) {
   const columnIdentificatorTitle = ss.getRangeByName("ColumnIdentificatorTitle").getValue();
   const columnExperimentEventNameTitle = ss.getRangeByName("ColumnExperimentEventNameTitle").getValue();
   const columnExperimentVariantParameterTitle = ss.getRangeByName("ColumnExperimentVariantParameterTitle").getValue();
-  const queryInformationLogging = ss.getRangeByName("SettingsQueryInformationCheckbox").getValue();
-  const queryPricePerTiB = ss.getRangeByName("SettingsQueryPricePerTiB").getValue();
 
   function colLetter(n) {
     let s = '';
@@ -337,27 +420,14 @@ function flatten2RowBlocks(sheet) {
   }
   const varParamColLetter = colLetter(typeof experimentVariantParameterColumn === 'number' ? experimentVariantParameterColumn : 0);
 
-const results = { valid: [], skipped: [] };
+  const results = { valid: [], skipped: [] };
   const lastRow = sheet.getLastRow();
 
   function pushStatusOnly(topRow, idVal) {
     const idStr = normalizeExperimentId(idVal);
     if (!idStr) return false;
-    // A-status row
-    results.valid.push({
-      id: idStr,
-      variant: "A",
-      // only fields used by MERGE for STATUS_ONLY must be present:
-      analyze_test: false,
-      export_mode: "STATUS_ONLY"
-    });
-    // B-status row
-    results.valid.push({
-      id: idStr,
-      variant: "B",
-      analyze_test: false,
-      export_mode: "STATUS_ONLY"
-    });
+    results.valid.push({ id: idStr, variant: "A", analyze_test: false, export_mode: "STATUS_ONLY" });
+    results.valid.push({ id: idStr, variant: "B", analyze_test: false, export_mode: "STATUS_ONLY" });
     return true;
   }
 
@@ -370,16 +440,14 @@ const results = { valid: [], skipped: [] };
     else if (analyzeRaw === "Update") export_mode = "UPDATE";
     else export_mode = "STATUS_ONLY";
 
-    // If STATUS_ONLY, just export ID+variant with analyze_test=false and skip all validations.
     if (export_mode === "STATUS_ONLY") {
       const idVal = sheet.getRange(r, idColumn).getValue();
       if (!pushStatusOnly(r, idVal)) {
         results.skipped.push(`Rows ${r}-${r2} skipped (STATUS_ONLY): missing Experiment ID.`);
       }
-      continue; // move to next block
+      continue;
     }
 
-    // MERGED (top row)
     const valIdColumnRaw = sheet.getRange(r, idColumn).getValue();
     const valIdColumn = normalizeExperimentId(valIdColumnRaw);
     const valExperimentNameColumn = sheet.getRange(r, experimentNameColumn).getValue();
@@ -392,20 +460,31 @@ const results = { valid: [], skipped: [] };
     const valScopeColumn = sheet.getRange(r, scopeColumn).getValue();
     const valIdentitySourceColumn = sheet.getRange(r, identitySourceColumn).getValue();
     const valAnalyticsTool = String(getAnalyticsTool()).toUpperCase();
-    const valQueryInformationLogging = queryInformationLogging;
-    const valQueryPricePerTiB= queryPricePerTiB;
 
     const valVariantSettings = String(sheet.getRange(r, variantSettingsColumn).getValue() || "Same");
     const isDifferent = (valVariantSettings === "Different");
 
     const valExperimentEventValueParameterColumn = sheet.getRange(r, experimentEventValueParameterColumn).getValue();
     const valUserOverlapColum = sheet.getRange(r, userOverlapColumn).getValue();
+    const valAiTotalSampleSizeColum = sheet.getRange(r, aiTotalSampleSize).getValue();
 
-    // UNMERGED (both rows)
     const valVariantNameColumn_r = sheet.getRange(r, variantNameColumn).getValue();
     const valVariantNameColumn_r2 = sheet.getRange(r2, variantNameColumn).getValue();
     const valExperimentVariantStringColumn_r = sheet.getRange(r, experimentVariantStringColumn).getValue();
     const valExperimentVariantStringColumn_r2 = sheet.getRange(r2, experimentVariantStringColumn).getValue();
+
+    // ==========================================================
+    // REGEX VALIDATION BLOCK (exp_variant_string)
+    // ==========================================================
+    if (!ISVALIDREGEX(valExperimentVariantStringColumn_r)) {
+      SpreadsheetApp.getUi().alert("🚨 Export Stopped!", "Syntax error in RegEx.\n\nSheet: " + experimentSheetName + "\nRow: " + r + "\nBroken RegEx: " + valExperimentVariantStringColumn_r + "\n\nPlease fix this before exporting.", SpreadsheetApp.getUi().ButtonSet.OK);
+      return { error: true };
+    }
+    if (!ISVALIDREGEX(valExperimentVariantStringColumn_r2)) {
+      SpreadsheetApp.getUi().alert("🚨 Export Stopped!", "Syntax error in RegEx.\n\nSheet: " + experimentSheetName + "\nRow: " + r2 + "\nBroken RegEx: " + valExperimentVariantStringColumn_r2 + "\n\nPlease fix this before exporting.", SpreadsheetApp.getUi().ButtonSet.OK);
+      return { error: true };
+    }
+    // ==========================================================
 
     const valExperimentEventNameColumn_r = sheet.getRange(r, experimentEventNameColumn).getValue();
     const valExperimentVariantParameterColumn_r = sheet.getRange(r, experimentVariantParameterColumn).getValue();
@@ -415,14 +494,12 @@ const results = { valid: [], skipped: [] };
     const topConversionEvent = sheet.getRange(r, conversionEventColumn).getValue();
     const botConversionEvent = sheet.getRange(r2, conversionEventColumn).getValue();
 
-    // Date comparison
     const isCompared = !!sheet.getRange(r, dateComparisonColumn).getValue();
     const dateStart_r = formatDateForBQ(sheet.getRange(r,  dateStartColumn).getValue());
     const dateEnd_r = formatDateForBQ(sheet.getRange(r,  dateEndColumn).getValue());
     const dateStart_r2 = formatDateForBQ(sheet.getRange(r2, dateStartColumn).getValue());
     const dateEnd_r2 = formatDateForBQ(sheet.getRange(r2, dateEndColumn).getValue());
 
-    // VALIDATIONS
     const missingCols = [];
     if (!valIdColumn) missingCols.push(columnIdTitle);
     if (!valExperimentNameColumn) missingCols.push(columnExperimentNameTitle);
@@ -475,7 +552,6 @@ const results = { valid: [], skipped: [] };
       continue;
     }
 
-    // NORMALIZATIONS
     const boolAnalyzeTestColumn = (String(analyzeRaw).toLowerCase() === "yes");
     const boolEventValueTestColumn = (String(valEventValueTestColumnStr).toLowerCase() === "yes");
 
@@ -491,8 +567,8 @@ const results = { valid: [], skipped: [] };
     const exp_event_name_B = String(isDifferent ? (valExperimentEventNameColumn_r2 || '') : (valExperimentEventNameColumn_r || ''));
     const exp_variant_param_A = String(valExperimentVariantParameterColumn_r || '');
     const exp_variant_param_B = String(isDifferent ? (valExperimentVariantParameterColumn_r2 || '') : (valExperimentVariantParameterColumn_r || ''));
+    const ai_total_target_sample = valAiTotalSampleSizeColum ? valAiTotalSampleSizeColum : ss.getRangeByName("SettingsAITotalSampleSize").getValue();
 
-    // RECORDS
     const rec1 = {
       id: String(valIdColumn),
       variant: "A",
@@ -517,8 +593,7 @@ const results = { valid: [], skipped: [] };
       user_overlap: String(valUserOverlapColum),
       export_mode,
       analytics_tool: valAnalyticsTool,
-      query_information_logging: valQueryInformationLogging,
-      query_price_per_tib: valQueryPricePerTiB
+      ai_total_target_sample: ai_total_target_sample
     };
     results.valid.push(rec1);
 
@@ -546,8 +621,7 @@ const results = { valid: [], skipped: [] };
       user_overlap: String(valUserOverlapColum),
       export_mode,
       analytics_tool: valAnalyticsTool,
-      query_information_logging: valQueryInformationLogging,
-      query_price_per_tib: valQueryPricePerTiB
+      ai_total_target_sample: ai_total_target_sample
     };
     results.valid.push(rec2);
   }
@@ -579,6 +653,10 @@ function exportExperimentFiltersToBigQueryCSVLoad() {
 
   // Build staging rows (actual filter rows)
   var flat = flattenExperimentFilters(expSheet, filterSheet); // may be empty if filters removed
+
+  // HALT IF REGEX IS BROKEN
+  if (flat && flat.error) return "🚨 Filters sync aborted due to RegEx error.";
+
   var rows = flat.valid;
   if (flat.skipped.length) SpreadsheetApp.getUi().alert("Some Filters were skipped:\n\n" + flat.skipped.join("\n"));
 
@@ -674,6 +752,16 @@ function flattenExperimentFilters(expSheet, filterSheet) {
         const scope = String(vals[i][5] || '').trim();
         const field = String(vals[i][6] || '').trim();
         const value = String(vals[i][7] || '').trim();
+        
+        // ==========================================================
+        // 🚨 NEW REGEX VALIDATION BLOCK (Advanced filters)
+        // ==========================================================
+        if (!ISVALIDREGEX(value)) {
+           SpreadsheetApp.getUi().alert("🚨 Export Stopped!", "Syntax error in RegEx.\n\nSheet: " + filtersSheetName + "\nRow: " + (filtersDataStartRow + i) + "\nBroken RegEx: " + value + "\n\nPlease fix this before exporting.", SpreadsheetApp.getUi().ButtonSet.OK);
+           return { error: true };
+        }
+        // ==========================================================
+
         const notes = String(vals[i][8] || '').trim();
         if (!expId || (variant !== 'A' && variant !== 'B') || !enabled) continue;
         if (!advIndex[expId]) advIndex[expId] = { A: [], B: [] };
@@ -723,6 +811,15 @@ function flattenExperimentFilters(expSheet, filterSheet) {
     const scopeA = String(expSheet.getRange(r, filterScopeColumn).getValue() || 'Event');
     const fieldA = String(expSheet.getRange(r, filterFieldColumn).getValue() || '').trim();
     const valueA = String(expSheet.getRange(r, filterValueColumn).getValue() || '').trim();
+    
+    // ==========================================================
+    // REGEX VALIDATION BLOCK (Simple filters - Variant A)
+    // ==========================================================
+    if (!ISVALIDREGEX(valueA)) {
+       SpreadsheetApp.getUi().alert("🚨 Export Stopped!", "Syntax error in RegEx.\n\nSheet: " + experimentSheetName + " (Simple Filter)\nRow: " + r + "\nBroken RegEx: " + valueA + "\n\nPlease fix this before exporting.", SpreadsheetApp.getUi().ButtonSet.OK);
+       return { error: true };
+    }
+    // ==========================================================
 
     let ftypeB = ftypeA, onB = onA, scopeB = scopeA, fieldB = fieldA, valueB = valueA;
     if (different) {
@@ -731,6 +828,16 @@ function flattenExperimentFilters(expSheet, filterSheet) {
       scopeB = String(expSheet.getRange(r2, filterScopeColumn).getValue() || scopeA);
       const fB = String(expSheet.getRange(r2, filterFieldColumn).getValue() || '').trim();
       const vB = String(expSheet.getRange(r2, filterValueColumn).getValue() || '').trim();
+      
+      // ==========================================================
+      // REGEX VALIDATION BLOCK (Simple filters - Variant B)
+      // ==========================================================
+      if (!ISVALIDREGEX(vB)) {
+         SpreadsheetApp.getUi().alert("🚨 Export Stopped!", "Syntax error in RegEx.\n\nSheet: " + experimentSheetName + " (Simple Filter)\nRow: " + r2 + "\nBroken RegEx: " + vB + "\n\nPlease fix this before exporting.", SpreadsheetApp.getUi().ButtonSet.OK);
+         return { error: true };
+      }
+      // ==========================================================
+
       if (fB) fieldB = fB; if (vB) valueB = vB;
     }
 
@@ -1244,4 +1351,19 @@ function deleteRowsInBigQuery(ids) {
       Logger.log("Successfully deleted rows in table %s.", item.table);
     }
   });
+}
+
+/**
+ * Checks if a string is a valid Regular Expression.
+ */
+function ISVALIDREGEX(regexString) {
+  if (regexString === "" || regexString == null) {
+    return true; // Blank cells are ignored
+  }
+  try {
+    new RegExp(regexString);
+    return true; 
+  } catch (e) {
+    return false; 
+  }
 }

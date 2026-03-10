@@ -61,6 +61,53 @@ You may have to scroll sideways in the table below to see all the settings.
       <td>Experiment data summarized</td>
       <td>experiments_report</td>
     </tr>
+	<tr>
+      <th colspan="3" scope="colgroup">AI Summary</th>
+	</tr>
+	<tr>
+      <th scope="row" style="text-align: left;">Activate AI Summary</th>
+      <td>Optional. By ticking this box AI Summary will be activated. Requires extra setup in GCP.</td>
+      <td>true</td>
+    </tr>
+	<tr>
+      <th scope="row" style="text-align: left;">Total target sample</th>
+      <td>Total target sample size before AI will recommend the output. This is also known as "Fixed horizon".</td>
+      <td>2000</td>
+    </tr>
+	<tr>
+      <th scope="row" style="text-align: left;">AI Prompt</th>
+      <td><strong>Prompt suggesion 1. Needs a manual inserted Sample Size (recommended):</strong></br>
+	  You are an automated data reporting system writing a formal summary for an executive dashboard. 
+Write exactly 2 to 6 concise sentences summarizing the following A/B test results. Begin your output directly with the analytical summary. 
+
+Follow these rules strictly:
+1. Winners & Significance: Mention if the test reached the Required Confidence Level for "Conversion Rate", "Mean Value", or both. State which variant is the winner, or if the test is inconclusive. 
+2. Business Impact: If the test involves a "Mean Value", state the Total Value driven by each variant. Treat "Total Value" as a unitless number (DO NOT add currency symbols).
+3. Formatting: When citing statistical evidence, explicitly state whether you are referring to the "Conversion P-Value" or the "Value P-Value". Do not use scientific notation. Do not mention any metrics marked as N/A.
+4. Sample Size Warning: The required total target sample size for this test is {{TARGET_SAMPLE}}. If the combined Total Sample Size (Variant A + Variant B) is less than this target, you MUST warn the audience about the high risk of a "false positive" (Type 1 error). 
+5. Underpowered Warning: If the total target size is set very low (below 1000), warn the audience that the test may be underpowered to reliably detect meaningful differences.
+6. Duration & Conclusion Strategy: Look at the "Estimated Days Remaining". 
+   - If it is 0 days: State that the target sample size has been met and recommend concluding the test. 
+   - If it is between 1 and 30 days: Recommend letting the test run for that specific number of days. 
+   - If it is greater than 30 days: DO NOT recommend letting it run. Instead, explicitly warn the audience that the site lacks sufficient daily traffic to reach statistical significance in a reasonable timeframe (under 30 days), and recommend either aborting the test or re-evaluating the traffic allocation strategy.
+   
+<strong>Prompt suggesion 2. This will make Gemini ignore {{TARGET_SAMPLE}}, and instead try to figure this out itself. Adjust Statistical Power and Relative MDE according to your business:</strong></br>
+You are an automated data reporting system writing a formal summary for an executive dashboard. 
+Write exactly 2 to 6 concise sentences summarizing the following A/B test results. Begin your output directly with the analytical summary. 
+
+Follow these rules strictly:
+1. Winners & Significance: Mention if the test reached the Required Confidence Level for "Conversion Rate", "Mean Value", or both. State which variant is the winner, or if the test is inconclusive. 
+2. Business Impact: If the test involves a "Mean Value", state the Total Value driven by each variant. Treat "Total Value" as a unitless number (DO NOT add currency symbols).
+3. Formatting: When citing statistical evidence, explicitly state whether you are referring to the "Conversion P-Value" or the "Value P-Value". Do not use scientific notation. Do not mention any metrics marked as N/A.
+4. IMPORTANT RULE: Ignore the {{TARGET_SAMPLE}} information. Instead, to determine if traffic is sufficient, calculate the required sample size assuming an industry-standard Statistical Power of 80% (0.80) and a Relative MDE of 5%.
+5. Sample Size Warning: Use the baseline conversion rate derived from the calculated data in 4. If the combined Total Sample Size (Variant A + Variant B) is less than this target, you MUST warn the audience about the high risk of a "false positive" (Type 1 error). 
+6. Underpowered Warning: If the total target size is set very low (below 1000), warn the audience that the test may be underpowered to reliably detect meaningful differences.
+7. Duration & Conclusion Strategy: Look at the "Estimated Days Remaining". 
+   - If it is 0 days: State that the target sample size has been met and recommend concluding the test. 
+   - If it is between 1 and 30 days: Recommend letting the test run for that specific number of days. 
+   - If it is greater than 30 days: DO NOT recommend letting it run. Instead, explicitly warn the audience that the site lacks sufficient daily traffic to reach statistical significance in a reasonable timeframe (under 30 days), and recommend either aborting the test or re-evaluating the traffic allocation strategy.
+   </td>
+    </tr>
     <tr>
       <th colspan="3" scope="colgroup">Download data to Sheet Settings</th>
     </tr>
@@ -72,6 +119,7 @@ You may have to scroll sideways in the table below to see all the settings.
 	  GA4 Dataform<br />
 	  Amplitude<br />
 	  Mixpanel<br />
+	  PostHog<br />
 	  </td>
     </tr>
     <tr>
@@ -80,16 +128,21 @@ You may have to scroll sideways in the table below to see all the settings.
       <td>e.g., 3 Last Days</td>
     </tr>
     <tr>
+      <th scope="row" style="text-align: left;" style="text-align: left;">Ecommerce Items Object Name</th>
+      <td>If you are using a different tool than GA4, change "items" to match your ecommerce items structure.</td>
+      <td>e.g., items</td>
+    </tr>
+    <tr>
       <th colspan="3" scope="colgroup">Default Experiment Event Name, Variant String & Value Settings</th>
     </tr>
     <tr>
       <th scope="row" style="text-align: left;" style="text-align: left;">Experiment Event Name</th>
-      <td>Experiment Event Name. If you are following the GA4 Guide, **experience_impression** is the recommende name.</td>
+      <td>Experiment Event Name. If you are following the GA4 Guide, <strong>experience_impression</strong> is the recommende name.</td>
       <td>experience_impression</td>
     </tr>
     <tr>
       <th scope="row" style="text-align: left;" style="text-align: left;">Experiment Variant String</th>
-      <td>Experiment Variant String. If you are following the GA4 Guide, **exp_variant_string** is the recommende name.</td>
+      <td>Experiment Variant String. If you are following the GA4 Guide, <strong>exp_variant_string</strong> is the recommende name.</td>
       <td>exp_variant_string</td>
     </tr>
     <tr>
@@ -150,14 +203,14 @@ You may have to scroll sideways in the table below to see all the settings.
     <tr>
       <th scope="row" style="text-align: left;" style="text-align: left;">Include BigQuery Columns (Field Names)</th>
       <td>BigQuery columns to include for getting parameters. Columns are matched using RegEx. Adapt this setting to your own needs.</td>
-      <td>^(?:device\.|geo\.|app_info\.|traffic_source\.|collected_traffic_source\.|ecommerce\.|privacy_info\.|user_ltv\.|event_date$|event_name$|stream_id$|platform$)</td>
+      <td>^(?:device\.|geo\.|ecommerce\.|stream_id$|platform$)</td>
     </tr>
   </tbody>
 </table>
 
-## GA4 Dataform Settings
+## GA4Dataform Settings
 <table>
-  <caption>GA4 Dataform Settings Configuration</caption>
+  <caption>GA4Dataform Settings Configuration</caption>
   <thead>
     <tr>
       <th scope="col" style="text-align: left;">Setting </th>
@@ -192,7 +245,7 @@ You may have to scroll sideways in the table below to see all the settings.
     <tr>
       <th scope="row" style="text-align: left;" style="text-align: left;">Include BigQuery Columns (Field Names)</th>
       <td>BigQuery columns to include for getting parameters. Columns are matched using RegEx. Adapt this setting to your own needs. Items are supported.</td>
-	  <td>^(device\.|geo\.|app_info\.|traffic_source\.|collected_traffic_source\.|session_traffic_source_last_click\.|first_user_traffic_source\.|fixed_traffic_source\.|ecommerce\.|items\.|privacy_info\.|user_ltv\.|page\.|event_params_custom\.|user_properties\.|event_date$|^(event_name|stream_id|platform|is_active_user|property_id|is_measurement_protocol_hit|has_source|is_final)$)</td>
+	  <td>^(device\.|geo\.|ecommerce\.|items\.|page\.|event_params_custom\.|user_properties\.|^(stream_id|platform)$)</td>
     </tr>
   </tbody>
 </table>
@@ -234,14 +287,14 @@ You may have to scroll sideways in the table below to see all the settings.
     <tr>
       <th scope="row" style="text-align: left;" style="text-align: left;">Include BigQuery Columns (Field Names)</th>
       <td>BigQuery columns to include for getting parameters. Columns are matched using RegEx. Adapt this setting to your own needs.</td>
-	  <td>^(app|city|country|device_brand|device_carrier|device_family|device_manufacturer|device_model|device_type|os_name|os_version|platform|region)$</td>
+	  <td>^(app|city|country|device_brand|device_carrier|device_family|device_manufacturer|device_model|device_type|os_name|platform|region)$</td>
     </tr>
   </tbody>
 </table>
 
 ## Mixpanel Settings
 <table>
-  <caption>GA4 Dataform Settings Configuration</caption>
+  <caption>Mixpanel Settings Configuration</caption>
   <thead>
     <tr>
       <th scope="col" style="text-align: left;">Setting </th>
@@ -272,6 +325,48 @@ You may have to scroll sideways in the table below to see all the settings.
       <th scope="row" style="text-align: left;" style="text-align: left;">Exclude Parameters</th>
       <td>Exclude Parameters not relevant for your analyzis. Exclude these Parameters separated by comma.</td>
 	  <td>mp_processing_time_ms, $mp_api_timestamp_ms, $mp_event_size, user_agent, mp_lib, $lib_version, $mp_api_endpoint, $insert_id, mp_processing_time_ms, mp_country_code</td>
+    </tr>
+    <tr>
+      <th scope="row" style="text-align: left;" style="text-align: left;">Include BigQuery Columns (Field Names)</th>
+      <td>BigQuery columns to include for getting parameters. Columns are matched using RegEx. Adapt this setting to your own needs.</td>
+	  <td></td>
+    </tr>
+  </tbody>
+</table>
+
+## PostHog Settings
+<table>
+  <caption>PostHog Settings Configuration</caption>
+  <thead>
+    <tr>
+      <th scope="col" style="text-align: left;">Setting </th>
+      <th scope="col" style="text-align: left;">Description</th>
+      <th scope="col" style="text-align: left;">Value</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <th colspan="3" scope="colgroup">Download data to Sheet Settings</th>
+    </tr>
+    <tr>
+      <th scope="row" style="text-align: left;" style="text-align: left;">BigQuery Data Set ID</th>
+      <td>The BigQuery dataset containing your events. Example values in the sheet is specific for the tool selected.</td>
+	  <td>e.g., posthog</td>
+    </tr>
+    <tr>
+      <th scope="row" style="text-align: left;" style="text-align: left;">BigQuery Table ID</th>
+      <td>The BigQuery table containing your events. Example values in the sheet is specific for the tool selected.</td>
+      <td>events</td>
+    </tr>
+    <tr>
+      <th scope="row" style="text-align: left;" style="text-align: left;">Exclude Events</th>
+      <td>Exclude Events not relevant for your analysis. Exclude these Events separated by comma.</td>
+	  <td></td>
+    </tr>
+    <tr>
+      <th scope="row" style="text-align: left;" style="text-align: left;">Exclude Parameters</th>
+      <td>Exclude Parameters not relevant for your analyzis. Exclude these Parameters separated by comma.</td>
+	  <td>$set_once, $initial_browser, $initial_browser_version, $initial_geoip_accuracy_radius, $initial_geoip_city_confidence, $initial_geoip_city_name, $initial_geoip_continent_code, $initial_geoip_continent_name, $initial_geoip_country_code, $initial_geoip_country_name, $initial_geoip_latitude, $initial_geoip_longitude, $initial_geoip_postal_code, $initial_geoip_subdivision_1_code, $initial_geoip_subdivision_1_name, $initial_geoip_subdivision_2_code, $initial_geoip_subdivision_2_name, $initial_geoip_time_zone, $initial_os, $initial_pathname, $initial_referring_domain, $initial_screen_height, $initial_screen_width, $transformations_succeeded, $initial_current_url, $initial_device_type</td>
     </tr>
     <tr>
       <th scope="row" style="text-align: left;" style="text-align: left;">Include BigQuery Columns (Field Names)</th>

@@ -18,7 +18,7 @@
 	-- Replace "your_project" with your project
 	-- Replace "analytics_XXX" with your data set
 
-  -- CHECK REGION: Replace 'region-eu' with 'region-us' if your data is in US
+  -- CHECK REGION: Replace 'region-eu' with 'region-us' if your data is in USA
 ----------------------------------------------------------------------------
 
 begin
@@ -33,7 +33,6 @@ begin
   declare dyn_sql                 string  default "";
   declare exp_filter              string  default "";
   declare conv_filter             string  default "";
-  declare events_table            string;
   declare id_expr                 string  default 'user_pseudo_id';
   declare id_predicate            string  default 'user_pseudo_id IS NOT NULL';
   declare id_filter               string  default '';
@@ -46,6 +45,10 @@ begin
 
   declare query_info_logging      bool default false;
   declare query_price_per_tib     float64;
+  
+  declare ai_summary_activated    bool default false; 
+  declare ai_prompt               string default '';
+
 
   -- Firebase-aware logic
   declare exposure_guard          string  default '';
@@ -53,48 +56,53 @@ begin
 
   -- Validates if GA4 data exists
   declare is_ga4 bool default (
-    select count(*) > 0
-    from `your_project.bigquery_ab_analyzer.experiments`
-    where analyze_test = true
-      and analytics_tool = 'GOOGLE ANALYTICS'
+    select exists(
+      select 1 
+      from `your_project.bigquery_ab_analyzer.experiments` 
+      where analyze_test = true
+        and analytics_tool = 'GOOGLE ANALYTICS'
+    )
   );
 
   if is_ga4 then -- It's a GA4 query, run the query.
-    ----------------------------------------------------------------------------
-    -- (1) Determine which events table to use by checking INFORMATION_SCHEMA.
-    ----------------------------------------------------------------------------
-    set events_table = (
-      select if(count(*) > 0, 'events_fresh_', 'events_')
-      from `your_project.analytics_XXX.INFORMATION_SCHEMA.TABLES`
-      where table_name like 'events_fresh_%'
-    );
 
-    -- Log query information
-    set query_info_logging = (
-      select count(*) > 0
-      from `your_project.bigquery_ab_analyzer.experiments`
-      where analyze_test = true
-		and analytics_tool = 'GOOGLE ANALYTICS'
-		and query_information_logging = true
+    set (
+      query_info_logging,
+      query_price_per_tib, 
+      ai_summary_activated, 
+      ai_prompt
+    ) = (
+      select as struct 
+        query_information_logging,
+        query_price_per_tib,
+        ai_summary_activated,
+        trim(ai_prompt)
+      from `your_project.bigquery_ab_analyzer.settings`
     );
-
-    set query_price_per_tib = (
-      select query_price_per_tib
-      from `your_project.bigquery_ab_analyzer.experiments`
-      where analyze_test = true
-		and analytics_tool = 'GOOGLE ANALYTICS'
-		and query_information_logging = true
-		and query_price_per_tib > 0
-      limit 1
-    );
-
+  
+    if ai_prompt is null or ai_prompt = '' then
+      set ai_prompt = concat(
+        'You are an automated data reporting system writing a formal summary for an executive dashboard. ',
+        'Write exactly 2 to 6 concise sentences summarizing the following A/B test results. Begin your output directly with the analytical summary. ',
+        'Follow these rules strictly: ',
+        '1. Winners & Significance: Mention if the test reached the Required Confidence Level for "Conversion Rate", "Mean Value", or both. State which variant is the winner, or if the test is inconclusive. ',
+        '2. Business Impact: If the test involves a "Mean Value", state the Total Value driven by each variant. Treat "Total Value" as a unitless number (DO NOT add currency symbols). ',
+        '3. Formatting: When citing statistical evidence, explicitly state whether you are referring to the "Conversion P-Value" or the "Value P-Value". Do not use scientific notation. Do not mention any metrics marked as N/A. ',
+        '4. Sample Size Warning: The required total target sample size for this test is {{TARGET_SAMPLE}}. If the combined Total Sample Size (Variant A + Variant B) is less than this target, you MUST warn the audience about the high risk of a "false positive" (Type 1 error). ',
+        '5. Underpowered Warning: If the total target size is set very low (below 1000), warn the audience that the test may be underpowered to reliably detect meaningful differences. ',
+        '6. Duration & Conclusion Strategy: Look at the "Estimated Days Remaining". ',
+        '-- If it is 0 days: State that the target sample size has been met and recommend concluding the test. ',
+        '-- If it is between 1 and 30 days: Recommend letting the test run for that specific number of days. ',
+        '-- If it is greater than 30 days: DO NOT recommend letting it run. Instead, explicitly warn the audience that the site lacks sufficient daily traffic to reach statistical significance in a reasonable timeframe (under 30 days), and recommend either aborting the test or re-evaluating the traffic allocation strategy.'
+      );
+    end if;
     ----------------------------------------------------------------------------
     -- (2) Create TEMP tables for final results
     ----------------------------------------------------------------------------
 
     -- 1. Create a temporary buffer to hold costs while looping
     if query_info_logging then
-      create temp table bigquery_ab_analyzer_query_information_buffer (
+      create or replace temp table bigquery_ab_analyzer_query_information_buffer (
         id string,
         job_id string,
         bytes_billed int64
@@ -137,6 +145,7 @@ begin
         conversion_count_all
       from `your_project.bigquery_ab_analyzer.experiments`
       where analyze_test = true
+        and analytics_tool = 'GOOGLE ANALYTICS'
     ) do
 
       ----------------------------------------------------------------------------
@@ -413,7 +422,7 @@ begin
     set sql_header = format("""
       with all_events as (
         select *, _TABLE_SUFFIX as table_suffix
-        from `your_project.analytics_XXX.%s*`
+        from `your_project.analytics_XXX.events_*`
         where %s
       ),
       extracted as (
@@ -445,7 +454,7 @@ begin
         where variant is not null and variant != ''
       )
     """, 
-      events_table, id_predicate,                                      -- for all_events
+      id_predicate,                                      -- for all_events
       variant_key, variant_key, variant_key, variant_key, variant_key, -- for extracted
       rec.scope, id_expr,                                              -- for grouping_key
       format_date('%Y%m%d', rec.date_start), format_date('%Y%m%d', rec.date_end),
@@ -607,7 +616,6 @@ elseif rec.user_overlap = "Credit Both" then
             (select sum(conv_value) from joined) as total_conversion_value,
             (select sum(conv_sq_value) from joined) as total_conversion_sq_value
         """,
-          events_table,
           id_predicate,
           rec.scope,
           id_expr,
@@ -632,7 +640,7 @@ elseif rec.user_overlap = "Credit Both" then
 
         ----------------------------------------------------------------------------
         -- Stores 1 row per variant run
-        -- CHECK REGION: Replace 'region-eu' with 'region-us' if your data is in US
+        -- CHECK REGION: Replace 'region-eu' with 'region-us' if your data is in USA
         ----------------------------------------------------------------------------
         if query_info_logging then
           insert into bigquery_ab_analyzer_query_information_buffer (id, job_id, bytes_billed)
@@ -801,6 +809,8 @@ elseif rec.user_overlap = "Credit Both" then
         b.test_b,
         b.conversion_b,
         b.conversions_counting_mode,
+        b.total_conversion_value_a,
+        b.total_conversion_value_b,
         -- Use whichever stats exist for this row
         coalesce(p.rate_a, r.rate_a) as conv_rate_a,
         coalesce(p.rate_b, r.rate_b) as conv_rate_b,
@@ -875,6 +885,8 @@ elseif rec.user_overlap = "Credit Both" then
         conv.conv_significance,
         conv.conv_details,
         conv.conversions_counting_mode,
+        conv.total_conversion_value_a,
+        conv.total_conversion_value_b,
         val_result.mean_value_a,
         val_result.mean_value_b,
         val_result.t_value,
@@ -910,6 +922,8 @@ elseif rec.user_overlap = "Credit Both" then
           conv_significance = source.conv_significance,
           conv_details = source.conv_details,
           conversions_counting_mode = source.conversions_counting_mode,
+          total_conversion_value_a = source.total_conversion_value_a,
+          total_conversion_value_b = source.total_conversion_value_b,
           mean_value_a = source.mean_value_a,
           mean_value_b = source.mean_value_b,
           t_value = source.t_value,
@@ -942,6 +956,8 @@ elseif rec.user_overlap = "Credit Both" then
           conv_significance,
           conv_details,
           conversions_counting_mode,
+          total_conversion_value_a,
+          total_conversion_value_b,
           mean_value_a,
           mean_value_b,
           t_value,
@@ -974,6 +990,8 @@ elseif rec.user_overlap = "Credit Both" then
           source.conv_significance,
           source.conv_details,
           source.conversions_counting_mode,
+          source.total_conversion_value_a,
+          source.total_conversion_value_b,
           source.mean_value_a,
           source.mean_value_b,
           source.t_value,
@@ -983,21 +1001,121 @@ elseif rec.user_overlap = "Credit Both" then
           source.date_last_analyzed
         );
 
-   ----------------------------------------------------------------------------
-    -- (9) FINAL SINGLE INSERT (Includes Loop + Merge overhead)
-    --     Adds the Merge job to the buffer, then sums everything up in one go.
+    ----------------------------------------------------------------------------
+    -- (9) BUFFER THE MERGE COST
     ----------------------------------------------------------------------------
     if query_info_logging then
-    -- 1. Grab the cost of the Merge we just ran and add it to the buffer
+      -- Grab the cost of the Merge we just ran and add it to the buffer
       insert into bigquery_ab_analyzer_query_information_buffer (id, job_id, bytes_billed)
       select
-        (select any_value(id) from bigquery_ab_analyzer_query_information_buffer), -- Attribute merge cost to the Experiment ID
-        job_id,
-        total_bytes_billed
-      from `region-eu`.INFORMATION_SCHEMA.JOBS_BY_USER
-      where job_id = @@last_job_id;
+        active_exps.id,
+        jobs.job_id,
+        cast(jobs.total_bytes_billed / active_exps.exp_count as int64)
+      from `region-eu`.INFORMATION_SCHEMA.JOBS_BY_USER as jobs
+      cross join (
+        -- Find all active experiments in the buffer and count them
+        select id, count(*) over() as exp_count 
+        from (select distinct id from bigquery_ab_analyzer_query_information_buffer)
+      ) as active_exps
+      where jobs.job_id = @@last_job_id;
+    end if;
 
-      -- 2. Aggregate everything into ONE SINGLE INSERT
+    ----------------------------------------------------------------------------
+    -- (10) GENERATE AI NARRATIVES
+    ----------------------------------------------------------------------------
+    if ai_summary_activated then
+      update `your_project.bigquery_ab_analyzer.experiments_report` dest
+        set ai_summary = JSON_VALUE(ai.ml_generate_text_result, '$.candidates[0].content.parts[0].text')
+        from (
+          select
+            id,
+            ml_generate_text_result
+          from ML.GENERATE_TEXT(
+            model `your_project.bigquery_ab_analyzer.gemini_narrator`,
+            (
+              select 
+                rep.id,
+                concat(
+                  replace(ai_prompt, '{{TARGET_SAMPLE}}', cast(coalesce(exp.ai_total_target_sample, 2000) as string)),
+                  '\n\nDATA:\n',
+                  'Experiment Name: ', coalesce(rep.experiment_name, 'N/A'), '. ',
+                  'Hypothesis: ', coalesce(rep.hypothesis, 'N/A'), '. ',
+                  '--- EXPERIMENT METADATA --- ',
+                  'Required Confidence Level: ', coalesce(cast(rep.confidence_level as string), 'N/A'), '%. ',
+                  'Is Date Comparison Analysis?: ', coalesce(cast(rep.date_comparison as string), 'N/A'), '. ',
+                  'Days Running: ', coalesce(cast(date_diff(rep.date_end, rep.date_start, day) + 1 as string), 'N/A'), ' days. ',
+                  'Target Sample Size: ', cast(coalesce(exp.ai_total_target_sample, 2000) as string), '. ',
+                  'Estimated Days Remaining to hit Target: ', 
+                    coalesce(cast(
+                      ceil(
+                        greatest(0, coalesce(exp.ai_total_target_sample, 2000) - (rep.test_a + rep.test_b)) 
+                        / 
+                        nullif((rep.test_a + rep.test_b) / (date_diff(rep.date_end, rep.date_start, day) + 1), 0)
+                      ) 
+                  as string), 'N/A'), ' days. ',
+                  
+                  '--- SAMPLE SIZE --- ',
+                  'Variant A Traffic: ', coalesce(cast(rep.test_a as string), '0'), ', ',
+                  'Variant B Traffic: ', coalesce(cast(rep.test_b as string), '0'), '. ',
+                  '--- CONVERSION RATE --- ',
+                  'Variant A Rate: ', coalesce(cast(rep.conv_rate_a as string), 'N/A'), ', ',
+                  'Variant B Rate: ', coalesce(cast(rep.conv_rate_b as string), 'N/A'), ', ',
+                  'Rate Significant?: ', coalesce(cast(rep.conv_significance as string), 'N/A'), ', ',
+                  'Conversion Z-Score: ', coalesce(format('%.4f', rep.conv_z_score), 'N/A'), ', ',
+                  'Conversion P-Value: ', coalesce(format('%.4f', rep.conv_p_value), 'N/A'), '. ',
+                  '--- MEAN VALUE & TOTAL VALUE --- ',
+                  'Variant A Total Value: ', coalesce(format('%.2f', rep.total_conversion_value_a), 'N/A'), ', ',
+                  'Variant B Total Value: ', coalesce(format('%.2f', rep.total_conversion_value_b), 'N/A'), ', ',
+                  'Variant A Mean Value: ', coalesce(format('%.2f', rep.mean_value_a), 'N/A'), ', ',
+                  'Variant B Mean Value: ', coalesce(format('%.2f', rep.mean_value_b), 'N/A'), ', ',
+                  'Value Significant?: ', coalesce(cast(rep.value_significance as string), 'N/A'), ', ',
+                  'Value T-Value: ', coalesce(format('%.4f', rep.t_value), 'N/A'), ', ',
+                  'Value P-Value: ', coalesce(format('%.4f', rep.value_p_value), 'N/A'), '.'
+                ) as prompt
+              from `your_project.bigquery_ab_analyzer.experiments_report` rep
+              join (
+                select 
+                  id, 
+                  max(ai_total_target_sample) as ai_total_target_sample
+                from `your_project.bigquery_ab_analyzer.experiments`
+                where analyze_test = true
+                group by id
+              ) exp 
+                on rep.id = exp.id 
+            ),
+            struct(
+              0.2 as temperature, 
+              256 as max_output_tokens
+            )
+          )
+        ) as ai
+        where dest.id = ai.id;
+
+      ----------------------------------------------------------------------------
+      -- (10b) BUFFER THE AI UPDATE COST (BigQuery bytes only)
+      ----------------------------------------------------------------------------
+      if query_info_logging then
+        insert into bigquery_ab_analyzer_query_information_buffer (id, job_id, bytes_billed)
+      select
+        active_exps.id,
+        jobs.job_id,
+        cast(jobs.total_bytes_billed / active_exps.exp_count as int64)
+      from `region-eu`.INFORMATION_SCHEMA.JOBS_BY_USER as jobs
+      cross join (
+        -- Find all active experiments in the buffer and count them
+        select id, count(*) over() as exp_count 
+        from (select distinct id from bigquery_ab_analyzer_query_information_buffer)
+      ) as active_exps
+      where jobs.job_id = @@last_job_id;
+      end if;
+    end if;
+
+    ----------------------------------------------------------------------------
+    -- (11) FINAL SINGLE AGGREGATION
+    ----------------------------------------------------------------------------
+    -- Now that the buffer has the loop queries, the merge query, AND the AI query...
+    -- Aggregate everything into ONE SINGLE INSERT
+    if query_info_logging then
       insert into `your_project.bigquery_ab_analyzer.experiments_query_information` 
       (id, execution_time, job_ids, total_bytes_billed, estimated_cost_usd)
       select

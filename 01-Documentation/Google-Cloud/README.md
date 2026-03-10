@@ -3,7 +3,7 @@
 1. Create a folder in **Google Drive** for the **BigQuery A/B Analyzer** solution.
 	1. Within that folder, create a **Images** folder.
 		1. Change **sharing** on the **Images** folder to **Anyone on the Internet with the link can view**.
-2. Copy the [**Google Sheet**](https://docs.google.com/spreadsheets/d/1ba5VPyk_huX3bclMY0w2jhFRuDQ5tVYyVEuLqVNpuCg/edit?usp=sharing) into the **BigQuery A/B Analyzer** folder.
+2. Copy the [**Google Sheet**](https://docs.google.com/spreadsheets/d/1voZiTk-JD6OK9PDlGaqJh4CBOPwTbxWnnrhrZMy4-Q8/edit?usp=sharing) into the **BigQuery A/B Analyzer** folder.
 	1. Go to the **Settings** sheet. Edit the following fields:
 		1. **Experiment Settings**
 			1. **Data Set Location**: As default it is set to **EU**. Change it to **US** if that is correct for you.
@@ -17,14 +17,14 @@
 	2. Go to the menu **BigQuery A/B Analyzer** -> **Get Data from BigQuery**
 		1. Refresh Events
 		2. Refresh Parameters
-3. Run the [**Create-Tables-and-UDF.sql**](../Google-Cloud/01-BigQuery/Create-Tables-and-UDF.sql) in BigQuery. This will create **6** tables and **9** User Defined Functions. When you run your analyzis later on, there will also be created some staging tables. Staging tables will come and go. They expires after 24 hours.
+3. Run the [**Create-Tables-and-UDF.sql**](../Google-Cloud/01-BigQuery/Create-Tables-and-UDF.sql) in BigQuery. This will create **7** tables and **9** User Defined Functions. When you run your analyzis later on, there will also be created some staging tables. Staging tables will come and go. They expires after 24 hours.
     1. Replace **your_project** with the name of your project.
     2. Region: As default **EU** is set as region. Change this to **US** if that is correct for you.
 4. **Copy the scheduled query relevant to you:**
 	1. [**Google Analytics 4** scheduled query](../Google-Cloud/01-BigQuery/01-Scheduled-queries/bigquery_ab_analyzer_ga4.sql).
 		1. Replace **your_project** with the name of your project.
 		2. Replace **analytics_XXX** with your GA4 data set.
-	2. [**GA4Dataform** scheduled query](../Google-Cloud/01-BigQuery/01-Scheduled-queries/bigquery_ab_analyzer_ga4_dataform.sql).
+	2. [**GA4Dataform** scheduled query](../Google-Cloud/01-BigQuery/01-Scheduled-queries/bigquery_ab_analyzer_ga4dataform.sql).
 		1. Replace **your_project** with the name of your project.
 		2. Replace **analytics_XXX** with your GA4 data set.
 		3. Replace 'region-eu' with 'region-us' if your data is in US.
@@ -35,7 +35,10 @@
 	4. [**Mixpanel** scheduled query](../Google-Cloud/01-BigQuery/01-Scheduled-queries/bigquery_ab_analyzer_mixpanel.sql).
 		1. In **declare events_table**, replace **your-project.mixpanel** with your project and data set.
 		2. Replace 'region-eu' with 'region-us' if your data is in US.
-	5. **Common settings for GA4, Amplitude & Mixpanel:**
+	5. [**PostHog** scheduled query](../Google-Cloud/01-BigQuery/01-Scheduled-queries/bigquery_ab_analyzer_posthog.sql).
+		1. In **declare events_table**, replace **your-project.posthog** with your project and data set.
+		2. Replace 'region-eu' with 'region-us' if your data is in US.
+	6. **Common settings for GA4, GA4Dataform, Amplitude, Mixpanel & PostHog:**
 		1. Go to [**Scheduled queries**](https://console.cloud.google.com/bigquery/scheduled-queries) and **Create scheduled query in editor**.
 			1. If you have changed suggested names for **data set** and **tables** in **Settings Sheet**, you must also replace these.
 			2. **Name the scheduled query:** Ex. "bigquery_ab_analyzer"

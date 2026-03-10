@@ -1,5 +1,5 @@
 /**
- * Copyright 2025 Knowit Experience Oslo
+ * Copyright 2026 Knowit Experience Oslo
  * 
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -32,6 +32,14 @@ if not bigquery_ab_analyzer_dataset_exists then
 end if;
 
 /*** CREATE TABLES ***/
+/*** Create settings table ***/
+create table if not exists `your_project.bigquery_ab_analyzer.settings` (
+  query_information_logging bool options(description='Should information about the query like bytes and job id be logged.'),
+  query_price_per_tib float64 options(description='Query price per tebibyte (TiB) in USD. The first 1 TiB per month is free.'),
+  ai_summary_activated bool options(description='By ticking this box AI Summary will be activated. Requires extra setup in GCP.'),
+  ai_prompt string options(description='Prompt that instructs AI how evaluate the result, and the tone used in the answer.')
+)
+
 /*** Create experiments table ***/
 create table if not exists `your_project.bigquery_ab_analyzer.experiments` (
   id string options(description='Experiment ID.'),
@@ -56,10 +64,9 @@ create table if not exists `your_project.bigquery_ab_analyzer.experiments` (
   experiment_event_value_parameter string options(description='Experiment value parameter. Ex. value. Can be any Event Scoped Metric.'),
   user_overlap string options(description='If you are exploring variants, and a user could have seen both variants, choose how to handle this scenario. "First Exposure" will credit the first variant the user saw. "Last Exposure" will credit the last variant the user saw. "Exclude" will exclude users from the analyzis. "Credit Both" will credit both variants.'),
   analytics_tool string options(description='Source of the experiment data, e.g. "Google Analytics 4" or "Amplitude".'),
-  query_information_logging bool options(description='Should information about the query like bytes and job id be logged.'),
-  query_price_per_tib float64 options(description='Query price per tebibyte (TiB) in USD. The first 1 TiB per month is free.')
+  ai_total_target_sample int64 options(description='Total target sample size before AI will recommend the output. This is also known as "Fixed horizon".')
 )
-cluster by id, experiment_name;		
+cluster by id, experiment_name;
 		
 /*** Create experiments_filters table ***/
 create table if not exists `your_project.bigquery_ab_analyzer.experiments_filters` (
@@ -122,7 +129,10 @@ create table if not exists `your_project.bigquery_ab_analyzer.experiments_report
   value_significance string options(description='Is the "value" result significant. SIGNIFICANT/NOT_SIGNIFICANT.'),
   value_details string options(description='Short description of the "value" result.'),
   date_last_analyzed date options(description='Date when query for the experiment was last run.'),
-  date_comparison bool options(description='TRUE if dates are split per variant (date comparison enabled).')
+  date_comparison bool options(description='TRUE if dates are split per variant (date comparison enabled).'),
+  ai_summary string options(description='Analysis summary made by Google Gemini AI.'),
+  total_conversion_value_a float64 options(description='Total Conversion Value for Variant A.'),
+  total_conversion_value_b float64 options(description='Total Conversion Value for Variant B.'),
 )
 partition by date_last_analyzed
 cluster by id, experiment_name;
@@ -136,6 +146,26 @@ create table if not exists `your_project.bigquery_ab_analyzer.experiments_query_
   estimated_cost_usd numeric options(description='Estimation of cost in USD.')
 );
 
+/*** ALTER TABLES ***/ 
+alter table `your_project.bigquery_ab_analyzer.experiments`
+add column if not exists ai_total_target_sample int64 
+  options(description='Total target sample size before AI will recommend the output. This is also known as "Fixed horizon".')
+  
+alter table `your_project.bigquery_ab_analyzer.experiments_report`
+add column if not exists ai_summary string 
+  options(description="Analysis summary made by Google Gemini AI."),
+add column if not exists total_conversion_value_a float64 
+  options(description="Total Conversion Value for Variant A."),
+add column if not exists total_conversion_value_b float64
+  options(description="Total Conversion Value for Variant B.");
+  
+/*** DROP TABLES ***/
+alter table `your_project.bigquery_ab_analyzer.experiments`
+drop column if exists query_information_logging,
+drop column if exists query_price_per_tib,
+drop column if exists ai_summary_activated,
+drop column if exists ai_total_target_sample;
+  
 /*** CREATE USER DEFINED FUNCTIONS (UDF) ***/
 /*** function 01: z_score_proportion ***/
 create or replace function `bigquery_ab_analyzer.udf_z_score_proportion`(
