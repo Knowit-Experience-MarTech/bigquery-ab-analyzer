@@ -334,7 +334,7 @@ function insertRowsAndMerge() {
     .requireValueInList(["User", "Session"], true)
     .build();
   const identitySourceRule = SpreadsheetApp.newDataValidation()
-    .requireValueInList(["DEVICE_ID", "USER_ID_ONLY", "USER_ID_OR_DEVICE_ID"], true)
+    .requireValueInList(["DEVICE_ID", "USER_ID_ONLY", "USER_ID_OR_DEVICE_ID", "EXP_DEVICE_ID"], true)
     .build();
   const variantSettingsRule = SpreadsheetApp.newDataValidation()
     .requireValueInList(["Same", "Different"], true)

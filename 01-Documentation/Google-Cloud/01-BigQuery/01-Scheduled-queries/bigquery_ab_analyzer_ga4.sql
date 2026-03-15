@@ -53,6 +53,7 @@ begin
   -- Firebase-aware logic
   declare exposure_guard          string  default '';
   declare variant_key             string  default '';
+  declare test_variants_regex     string  default '';
 
   -- Validates if GA4 data exists
   declare is_ga4 bool default (
@@ -151,7 +152,7 @@ begin
       ----------------------------------------------------------------------------
       -- (4) Build conditions that do not depend on the filters table
       ----------------------------------------------------------------------------
-      -- 4a) Identity expression / predicate / guard
+-- 4a) Identity expression / predicate / guard
       if rec.scope = "User" then
         if rec.identity_source = "USER_ID_ONLY" then
           set id_expr = "user_id";
@@ -161,6 +162,11 @@ begin
           set id_expr = "coalesce(nullif(user_id, ''), user_pseudo_id)";
           set id_predicate = "(user_id is not null and user_id != '' OR user_pseudo_id is not null)";
           set id_filter = "";  -- predicate already at source
+        -- Extracts the custom A/B test identifier from the event parameters
+        elseif rec.identity_source = "EXP_DEVICE_ID" then
+          set id_expr = "(select coalesce(value.string_value, cast(value.int_value as string), cast(value.float_value as string), cast(value.double_value as string)) from unnest(event_params) where key = 'exp_device_id')";
+          set id_predicate = "(select coalesce(value.string_value, cast(value.int_value as string), cast(value.float_value as string), cast(value.double_value as string)) from unnest(event_params) where key = 'exp_device_id') is not null";
+          set id_filter = "";
         else  -- DEVICE_ID
           set id_expr = "user_pseudo_id";
           set id_predicate = "user_pseudo_id is not null";
@@ -176,6 +182,12 @@ begin
       -- 4b) RESET filter strings; they will be assembled from the filters table
       set exp_filter = "";
       set conv_filter = "";
+
+      set test_variants_regex = coalesce((
+        select string_agg(concat('(', coalesce(exp_variant_string, ''), ')'), '|')
+        from `your_project.bigquery_ab_analyzer.experiments` 
+        where id = rec.id and analyze_test = true
+      ), '.*');
 
       -- 4c) Decide Firebase-vs-classic mode per experiment row
       if regexp_contains(rec.experiment_event_name, r'^firebase_exp_\d+$') then
@@ -343,290 +355,202 @@ begin
         );
       end if;
 
+----------------------------------------------------------------------------
+      -- (4e) Build the conversion-side CTE (Always RAW for proper timeline filtering)
       ----------------------------------------------------------------------------
-      -- (4e) Build the conversion-side CTE once (controls "count all" vs "first only")
-      ----------------------------------------------------------------------------
-
-      if rec.conversion_count_all then
-        -- Count EVERY conversion event (post-exposure)
-        set conv_side_sql = format("""
-          , conv_side as (
-            select
-              case when upper(trim('%s')) = 'USER' then %s
-                else concat(
-                  user_pseudo_id,
-                  cast((select s.value.int_value
-                    from unnest(event_params) s
-                    where s.key = 'ga_session_id' limit 1) as string)
-                )
-              end as grouping_key,
-              timestamp_micros(event_timestamp) as conv_time,
-              %s as conv_value,             -- 1. Uses value_expr
-              pow(%s, 2) as conv_sq_value,  -- 2. Uses value_expr AGAIN
-              1 as conv_count
-            from all_events
-            where table_suffix between '%s' and '%s'
+      set conv_side_sql = format("""
+        , conv_side as (
+          select
+            case when upper(trim('%s')) = 'USER' then %s
+              else concat(user_pseudo_id, cast((select s.value.int_value from unnest(event_params) s where s.key = 'ga_session_id' limit 1) as string))
+            end as grouping_key,
+            timestamp_micros(event_timestamp) as conv_time,
+            %s as conv_value
+          from all_events
+          where table_suffix between '%s' and '%s'
             and event_name = '%s'
             %s
+        )
+      """, coalesce(rec.scope, 'User'), id_expr, value_expr, format_date('%Y%m%d', rec.date_start), format_date('%Y%m%d', rec.date_end), coalesce(rec.conversion_event, ''), conv_filter);
+
+      ----------------------------------------------------------------------------
+      -- (4f) Build the Universal Footer based on counting mode
+      ----------------------------------------------------------------------------
+      if rec.conversion_count_all then
+        -- Count All Mode: Every valid post-exposure event counts as 1 conversion
+        set sql_footer = format("""
+          %s
+          , joined as (
+            select 
+              e.grouping_key, 
+              1 as conv_count, 
+              coalesce(c.conv_value, 0) as conv_value, 
+              pow(coalesce(c.conv_value, 0), 2) as conv_sq_value
+            from exposures_filtered e 
+            join conv_side c using (grouping_key)
+            where c.conv_time >= e.exposure_time
           )
-        """,
-          rec.scope,
-          id_expr,
-          value_expr,
-          value_expr,
-          format_date('%Y%m%d', rec.date_start),
-          format_date('%Y%m%d', rec.date_end),
-          rec.conversion_event,
-          conv_filter
-      );
+          select
+            (select count(distinct grouping_key) from exposures_filtered) as user_count,
+            coalesce((select sum(conv_count) from joined), 0) as conversion_count,
+            coalesce((select sum(conv_value) from joined), 0.0) as total_conversion_value,
+            coalesce((select sum(conv_sq_value) from joined), 0.0) as total_conversion_sq_value
+        """, conv_side_sql);
       else
-       -- Once-per-user/session
-       set conv_side_sql = format("""
-          , conv_side as (
-            select
-              case when upper(trim('%s')) = 'USER' then %s
-                else concat(
-                  user_pseudo_id,
-                  cast((select s.value.int_value
-                    from unnest(event_params) s
-                    where s.key = 'ga_session_id' limit 1) as string)
-                )
-              end as grouping_key,
-              min(timestamp_micros(event_timestamp)) as conv_time,
-              sum(%s) as conv_value,        -- 1. Uses value_expr
-              pow(sum(%s), 2) as conv_sq_value, -- 2. Uses value_expr AGAIN
-              1 as conv_count
-            from all_events
-            where table_suffix between '%s' and '%s'
-              and event_name = '%s'
-              %s
+        -- Once per User Mode: Filter post-exposure FIRST, then group by user
+        set sql_footer = format("""
+          %s
+          , joined_raw as (
+            select e.grouping_key, coalesce(c.conv_value, 0) as conv_value
+            from exposures_filtered e 
+            join conv_side c using (grouping_key)
+            where c.conv_time >= e.exposure_time
+          )
+          , joined as (
+            select 
+              grouping_key, 
+              1 as conv_count, 
+              sum(conv_value) as conv_value, 
+              pow(sum(conv_value), 2) as conv_sq_value
+            from joined_raw 
             group by grouping_key
           )
-        """,
-          rec.scope,
-          id_expr,
-          value_expr,
-          value_expr,
-          format_date('%Y%m%d', rec.date_start),
-          format_date('%Y%m%d', rec.date_end),
-          rec.conversion_event,
-          conv_filter
-        );
+          select
+            (select count(distinct grouping_key) from exposures_filtered) as user_count,
+            coalesce((select sum(conv_count) from joined), 0) as conversion_count,
+            coalesce((select sum(conv_value) from joined), 0.0) as total_conversion_value,
+            coalesce((select sum(conv_sq_value) from joined), 0.0) as total_conversion_sq_value
+        """, conv_side_sql);
       end if;
 
-    ----------------------------------------------------------------------------
-    -- (5) Build Dynamic SQL using the "Sandwich Method"
-    ----------------------------------------------------------------------------
-    
-    -- A. Define the Header (Common CTEs up to 'exposures_labeled')
-    set sql_header = format("""
-      with all_events as (
-        select *, _TABLE_SUFFIX as table_suffix
-        from `your_project.analytics_XXX.events_*`
-        where %s
-      ),
-      extracted as (
-        select a.*,
-          coalesce(
-            (select p.value.string_value from unnest(a.event_params) p where p.key = '%s' limit 1),
-            (select up.value.string_value from unnest(a.user_properties) up where up.key = '%s' limit 1),
-            (select cast(up.value.int_value as string) from unnest(a.user_properties) up where up.key = '%s' limit 1),
-            (select cast(up.value.float_value as string) from unnest(a.user_properties) up where up.key = '%s' limit 1),
-            (select cast(up.value.double_value as string) from unnest(a.user_properties) up where up.key = '%s' limit 1)
-          ) as variant_value
-        from all_events a
-      ),
-      exposures_all as (
-        select
-          case when upper(trim('%s')) = 'USER' then %s
-            else concat(user_pseudo_id, cast((select s.value.int_value from unnest(event_params) s where s.key = 'ga_session_id' limit 1) as string))
-          end as grouping_key,
-          timestamp_micros(event_timestamp) as exposure_time,
-          trim(coalesce(variant_value,'')) as variant
-        from extracted
-        where table_suffix between '%s' and '%s'
-          %s  -- exposure_guard
-          %s  -- exp_filter
-      ),
-      exposures_labeled as (
-        select grouping_key, exposure_time, variant
-        from exposures_all
-        where variant is not null and variant != ''
-      )
-    """, 
-      id_predicate,                                      -- for all_events
-      variant_key, variant_key, variant_key, variant_key, variant_key, -- for extracted
-      rec.scope, id_expr,                                              -- for grouping_key
-      format_date('%Y%m%d', rec.date_start), format_date('%Y%m%d', rec.date_end),
-      exposure_guard, exp_filter
-    );
-
-    -- B. Define the Footer (Joining to conversion side & Final Select)
-    -- NOTE: This standard footer is used for 'First Exposure' and 'Exclude'
-    set sql_footer = format("""
-      %s -- << conv_side_sql MUST GO HERE
-      , joined as (
-        select
-          e.grouping_key, e.exposure_time,
-          c.conv_time, c.conv_value, c.conv_sq_value, c.conv_count
-        from exposures_filtered e
-        join conv_side c using (grouping_key)
-        where c.conv_time >= e.exposure_time
-      )
-      select
-        (select count(*) from exposures_filtered) as user_count,
-        (select sum(conv_count) from joined) as conversion_count,
-        (select sum(conv_value) from joined) as total_conversion_value,
-        (select sum(conv_sq_value) from joined) as total_conversion_sq_value
-    """, conv_side_sql);
-
-    if rec.user_overlap = "First Exposure" then
-      set sql_logic = format("""
-        , exposures_first as (
-          select grouping_key, exposure_time, variant as variant_label
-          from (
-            select *, row_number() over (partition by grouping_key ORDER by exposure_time ASC) rn
-            from exposures_labeled
-          ) where rn = 1
+      ----------------------------------------------------------------------------
+      -- (4g) Build the Header (Common CTEs up to 'exposures_labeled')
+      ----------------------------------------------------------------------------
+      set sql_header = format("""
+        with all_events as (
+          select *, _TABLE_SUFFIX as table_suffix
+          from `your_project.analytics_XXX.events_*`
+          where %s
         ),
-        exposures_filtered as (
-          select grouping_key, exposure_time
-          from exposures_first
-          where regexp_contains(trim(variant_label), r'%s')
-        )
-      """, rec.exp_variant_string);
-
-      set dyn_sql = sql_header || sql_logic || sql_footer;
-
-      elseif rec.user_overlap = "Last Exposure" then
-      set sql_logic = format("""
-        , exposures_last_ranked as (
-           select 
-             grouping_key, 
-             variant, 
-             exposure_time,
-             -- Rank exposures by time descending (latest first)
-             row_number() over (partition by grouping_key order by exposure_time desc) as rn
-           from exposures_labeled
+        extracted as (
+          select a.*,
+            (select p.value.string_value from unnest(a.event_params) p where p.key = '%s' limit 1) as variant_value
+          from all_events a
         ),
-        exposures_filtered as (
-           select 
-             grouping_key, 
-             exposure_time,
-             timestamp('2099-12-31') as valid_until
-           from exposures_last_ranked
-           where rn = 1 -- Keep ONLY the very last variant this user saw
-             and regexp_contains(trim(variant), r'%s')
-        )
-      """, rec.exp_variant_string);
-      
-      set dyn_sql = sql_header || sql_logic || format("""
-        %s -- conv_side_sql INJECTED HERE (inside the WITH chain)
-        , joined as (
+        exposures_all as (
           select
-            e.grouping_key, e.exposure_time,
-            c.conv_time, c.conv_value, c.conv_sq_value, c.conv_count
-          from exposures_filtered e
-          join conv_side c using (grouping_key)
-          where c.conv_time >= e.exposure_time
-        )
-        select
-          -- PRESERVED: count(distinct grouping_key)
-          (select count(distinct grouping_key) from exposures_filtered) as user_count,
-          (select sum(conv_count) from joined) as conversion_count,
-          (select sum(conv_value) from joined) as total_conversion_value,
-          (select sum(conv_sq_value) from joined) as total_conversion_sq_value
-      """, conv_side_sql);
-
-    elseif rec.user_overlap = "Exclude" then
-      set sql_logic = format("""
-        , user_variant_count as (
-           select grouping_key, count(distinct variant) as variant_count
-           from exposures_labeled
-           group by grouping_key
+            case when upper(trim('%s')) = 'USER' then %s
+              else concat(user_pseudo_id, cast((select s.value.int_value from unnest(event_params) s where s.key = 'ga_session_id' limit 1) as string))
+            end as grouping_key,
+            timestamp_micros(event_timestamp) as exposure_time,
+            trim(coalesce(variant_value,'')) as variant
+          from extracted
+          where table_suffix between '%s' and '%s'
+            %s  -- exposure_guard
+            %s  -- exp_filter
         ),
-        exposures_by_variant_first as (
-           select grouping_key, variant, min(exposure_time) as exposure_time
-           from exposures_labeled
-           group by grouping_key, variant
-        ),
-        exposures_filtered as (
-           select e.grouping_key, e.exposure_time
-           from exposures_by_variant_first e
-           join user_variant_count u using (grouping_key)
-           where u.variant_count = 1
-             and regexp_contains(trim(e.variant), r'%s')
+        exposures_labeled as (
+          select grouping_key, exposure_time, variant
+          from exposures_all
+          where variant is not null and variant != ''
         )
-      """, rec.exp_variant_string);
+      """, 
+        id_predicate,                                                      
+        coalesce(variant_key, ''),                                                       
+        coalesce(rec.scope, 'User'), id_expr,                                                
+        format_date('%Y%m%d', rec.date_start), format_date('%Y%m%d', rec.date_end),
+        exposure_guard, exp_filter
+      );
 
-      set dyn_sql = sql_header || sql_logic || sql_footer;
+----------------------------------------------------------------------------
+      -- (5) Build Dynamic SQL Output based on User Overlap logic
+      ----------------------------------------------------------------------------
+      if upper(trim(coalesce(rec.user_overlap, ''))) = 'FIRST EXPOSURE' then
+        set sql_logic = format("""
+          , exposures_first as (
+            select grouping_key, exposure_time, variant as variant_label
+            from (
+              select *, row_number() over (partition by grouping_key ORDER by exposure_time ASC) rn
+              from exposures_labeled
+              where regexp_contains(variant, r'%s')
+            ) where rn = 1
+          ),
+          exposures_filtered as (
+            select grouping_key, exposure_time
+            from exposures_first
+            where regexp_contains(trim(variant_label), r'%s')
+          )
+        """, replace(test_variants_regex, '%', '%%'), replace(coalesce(rec.exp_variant_string, ''), '%', '%%'));
+        set dyn_sql = sql_header || sql_logic || sql_footer;
 
-elseif rec.user_overlap = "Credit Both" then
+      elseif upper(trim(coalesce(rec.user_overlap, ''))) = 'LAST EXPOSURE' then
+        set sql_logic = format("""
+          , exposures_last_ranked as (
+             select 
+               grouping_key, 
+               variant, 
+               row_number() over (partition by grouping_key order by exposure_time desc) as rn
+             from exposures_labeled
+             where regexp_contains(variant, r'%s')
+          ),
+          final_user_variant as (
+             select grouping_key, variant
+             from exposures_last_ranked
+             where rn = 1 and regexp_contains(trim(variant), r'%s')
+          ),
+          exposures_filtered as (
+             select e.grouping_key, min(e.exposure_time) as exposure_time
+             from exposures_labeled e
+             join final_user_variant f on e.grouping_key = f.grouping_key and e.variant = f.variant
+             group by e.grouping_key
+          )
+        """, replace(test_variants_regex, '%', '%%'), replace(coalesce(rec.exp_variant_string, ''), '%', '%%'));
+        set dyn_sql = sql_header || sql_logic || sql_footer;
+
+      elseif upper(trim(coalesce(rec.user_overlap, ''))) = 'EXCLUDE' then
+        set sql_logic = format("""
+          , user_variant_count as (
+             select grouping_key, count(distinct variant) as variant_count
+             from exposures_labeled
+             where regexp_contains(variant, r'%s')
+             group by grouping_key
+          ),
+          exposures_by_variant_first as (
+             select grouping_key, variant, min(exposure_time) as exposure_time
+             from exposures_labeled
+             group by grouping_key, variant
+          ),
+          exposures_filtered as (
+             select e.grouping_key, e.exposure_time
+             from exposures_by_variant_first e
+             join user_variant_count u using (grouping_key)
+             where u.variant_count = 1 and regexp_contains(trim(e.variant), r'%s')
+          )
+        """, replace(test_variants_regex, '%', '%%'), replace(coalesce(rec.exp_variant_string, ''), '%', '%%'));
+        set dyn_sql = sql_header || sql_logic || sql_footer;
+
+      elseif upper(trim(coalesce(rec.user_overlap, ''))) = 'CREDIT BOTH' then
         set dyn_sql = format("""
           with all_events as (
-            select
-              *,
-              _TABLE_SUFFIX as table_suffix
-            from `your_project.analytics_XXX.%s*`
+            select *, _TABLE_SUFFIX as table_suffix
+            from `your_project.analytics_XXX.events_*`
             where %s
           ),
-          exposures as (
+          exposures_filtered as (
             select
               case when upper(trim('%s')) = 'USER' then %s
-                else concat(
-                  user_pseudo_id,
-                  cast((select s.value.int_value
-                    from unnest(event_params) s
-                    where s.key = 'ga_session_id' limit 1) as string)
-                )
+                else concat(user_pseudo_id, cast((select s.value.int_value from unnest(event_params) s where s.key = 'ga_session_id' limit 1) as string))
               end as grouping_key,
               min(timestamp_micros(event_timestamp)) as exposure_time
             from all_events
             where table_suffix between '%s' and '%s'
               %s
-              and regexp_contains(
-                coalesce(
-                  (select p.value.string_value from unnest(event_params) p where p.key = '%s' limit 1),
-                  (select up.value.string_value from unnest(user_properties) up where up.key = '%s' limit 1),
-                  (select cast(up.value.int_value as string) from unnest(user_properties) up where up.key = '%s' limit 1),
-                  (select cast(up.value.float_value as string) from unnest(user_properties) up where up.key = '%s' limit 1),
-                  (select cast(up.value.double_value as string) from unnest(user_properties) up where up.key = '%s' limit 1)
-                ),
-                r'%s'
-              )
-            %s
+              and regexp_contains(coalesce((select p.value.string_value from unnest(event_params) p where p.key = '%s' limit 1), ''), r'%s')
+              %s
             group by grouping_key
           )
-          %s,
-          joined as (
-            select
-              e.grouping_key,
-              e.exposure_time,
-              c.conv_time,
-              c.conv_value,
-              c.conv_sq_value,
-              c.conv_count
-            from exposures e
-            join conv_side c using (grouping_key)
-            where c.conv_time >= e.exposure_time
-          )
-          select
-            (select count(*) from exposures) as user_count,
-            (select sum(conv_count) from joined) as conversion_count,
-            (select sum(conv_value) from joined) as total_conversion_value,
-            (select sum(conv_sq_value) from joined) as total_conversion_sq_value
-        """,
-          id_predicate,
-          rec.scope,
-          id_expr,
-          format_date('%Y%m%d', rec.date_start),
-          format_date('%Y%m%d', rec.date_end),
-          exposure_guard,
-          variant_key, variant_key, variant_key, variant_key, variant_key,
-          rec.exp_variant_string,
-          exp_filter,
-          conv_side_sql
-      );
+        """, id_predicate, coalesce(rec.scope, 'User'), id_expr, format_date('%Y%m%d', rec.date_start), format_date('%Y%m%d', rec.date_end), exposure_guard, coalesce(variant_key, ''), replace(coalesce(rec.exp_variant_string, ''), '%', '%%'), exp_filter);
+        set dyn_sql = dyn_sql || sql_footer;
 
       else
         set dyn_sql = null;
@@ -1040,6 +964,7 @@ elseif rec.user_overlap = "Credit Both" then
                   '\n\nDATA:\n',
                   'Experiment Name: ', coalesce(rep.experiment_name, 'N/A'), '. ',
                   'Hypothesis: ', coalesce(rep.hypothesis, 'N/A'), '. ',
+                  'Conversion Event: ', coalesce(rep.conversion_event, 'N/A'), '. ',
                   '--- EXPERIMENT METADATA --- ',
                   'Required Confidence Level: ', coalesce(cast(rep.confidence_level as string), 'N/A'), '%. ',
                   'Is Date Comparison Analysis?: ', coalesce(cast(rep.date_comparison as string), 'N/A'), '. ',

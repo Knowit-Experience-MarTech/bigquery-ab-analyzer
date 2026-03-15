@@ -93,6 +93,15 @@ If you only measure "Did they click?", you might miss a huge win.
 * **Reality**: In Variant B, those users watched 5 videos each, whereas in Variant A they only watched 1.
 	* *This Solution's Result*: "Variant B has a 400% higher Event Rate per User".
 
+### User Flexibility: You define what a user is
+
+The framework supports 4 different methods for identifying/analysing users:
+
+1. **DEVICE_ID**: Default method for the select tool to count and identify users. Ex. **GA Client ID**.
+2. **USER_ID**: Your own identifier with individual users Ex. **GA User-ID feature**.
+3. **USER_ID_OR_DEVICE_ID**: Uses User ID if it exists, if not it fallbacks to Device ID.
+4. **EXP_DEVICE_ID**: Bring your own ID, ex. Cookie ID from the A/B test tool. Full name: Experience Device ID.
+
 ### Your Personal Analyst: AI Summary
 
 * **AI Summary** is powered by [**Gemini**](https://docs.cloud.google.com/vertex-ai/generative-ai/docs/models). Gemini is interpreting the test, and summarises the result with recommendations.

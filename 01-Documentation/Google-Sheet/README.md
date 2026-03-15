@@ -167,13 +167,15 @@ Almost everything is powered by **[Apps Script](Apps-Script)**.
     </tr>
     <tr><td>Session</td></tr>
     <tr>
-      <th scope="row" style="text-align: left;" rowspan="3">Identifier</th>
-      <td rowspan="3">Dropdown</td>
+      <th scope="row" style="text-align: left;" rowspan="4">Identifier</th>
+      <td rowspan="4">Dropdown</td>
       <td><code>CLIENT_ID</code></td>
       <td rowspan="3">How should the user be identified? If <strong>USER_ID_ONLY</strong> or <strong>USER_ID_OR_CLIENT_ID</strong> is selected, session-scoped experiments are not possible.</td>
     </tr>
     <tr><td><code>USER_ID_ONLY</code></td></tr>
     <tr><td><code>USER_ID_OR_CLIENT_ID</code></td></tr>
+	<tr><td><code>EXP_DEVICE_ID</code></td><td>Use the identifier (ex. Cookie ID) from the experiment tool to identify users to align the data better with the experiment tool. This requires setup. You must extract the value from this identifier. Send it as an Event Parameter with all Events, and name it exactly <code>exp_device_id</code> (all lowercase, exactly matching the key in the SQL).
+	</td></tr>
     <tr>
       <th scope="row" style="text-align: left;" rowspan="2">Variant Settings</th>
       <td rowspan="2">Dropdown</td>

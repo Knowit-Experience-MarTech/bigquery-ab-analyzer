@@ -38,7 +38,7 @@ create table if not exists `your_project.bigquery_ab_analyzer.settings` (
   query_price_per_tib float64 options(description='Query price per tebibyte (TiB) in USD. The first 1 TiB per month is free.'),
   ai_summary_activated bool options(description='By ticking this box AI Summary will be activated. Requires extra setup in GCP.'),
   ai_prompt string options(description='Prompt that instructs AI how evaluate the result, and the tone used in the answer.')
-)
+);
 
 /*** Create experiments table ***/
 create table if not exists `your_project.bigquery_ab_analyzer.experiments` (
@@ -149,7 +149,7 @@ create table if not exists `your_project.bigquery_ab_analyzer.experiments_query_
 /*** ALTER TABLES ***/ 
 alter table `your_project.bigquery_ab_analyzer.experiments`
 add column if not exists ai_total_target_sample int64 
-  options(description='Total target sample size before AI will recommend the output. This is also known as "Fixed horizon".')
+  options(description='Total target sample size before AI will recommend the output. This is also known as "Fixed horizon".');
   
 alter table `your_project.bigquery_ab_analyzer.experiments_report`
 add column if not exists ai_summary string 

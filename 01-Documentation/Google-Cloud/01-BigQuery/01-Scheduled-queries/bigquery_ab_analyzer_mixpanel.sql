@@ -60,6 +60,7 @@ begin
 
   declare exposure_guard          string  default '';
   declare variant_key             string  default '';
+  declare test_variants_regex     string  default '';
 
   declare variant_json_path       string  default '';
   declare value_json_path         string  default '';
@@ -182,6 +183,11 @@ begin
         set id_expr = "coalesce(user_id, json_value(properties, '$.user_id'), json_value(properties, '$.\"$user_id\"'), distinct_id)";
         set id_predicate = "(user_id is not null or json_value(properties, '$.user_id') is not null or json_value(properties, '$.\"$user_id\"') is not null or (distinct_id is not null and distinct_id != ''))";
         set id_filter = ""; 
+      elseif rec.identity_source = "EXP_DEVICE_ID" then
+        -- Extracts the custom A/B test identifier from the JSON properties
+        set id_expr = "json_value(properties, '$.exp_device_id')";
+        set id_predicate = "json_value(properties, '$.exp_device_id') is not null and json_value(properties, '$.exp_device_id') != ''";
+        set id_filter = ""; 
       else  -- DEVICE_ID
         set id_expr = "distinct_id";
         set id_predicate = "distinct_id is not null and distinct_id != ''";
@@ -201,6 +207,11 @@ begin
     set sql_logic = "";
     set sql_footer = "";
     set dyn_sql = "";
+    set test_variants_regex = coalesce((
+      select string_agg(concat('(', coalesce(exp_variant_string, ''), ')'), '|')
+      from `your_project.bigquery_ab_analyzer.experiments` 
+      where id = rec.id and analyze_test = true and analytics_tool = 'MIXPANEL'
+    ), '.*');
 
     -- Exposure guard
     set variant_key = regexp_replace(trim(rec.experiment_variant_parameter), r'\s*\.\s*', '.');
@@ -311,46 +322,75 @@ begin
       end if;
     end if;
 
+-------------------------------------------------------------------------
+    -- (4e) Conversion-side CTE (Always RAW for proper timeline filtering)
     -------------------------------------------------------------------------
-    -- (4e) Conversion-side CTE
+    set conv_side_sql = format("""
+      , conv_side as (
+        select
+          case when upper(trim('%s')) = 'USER' then %s 
+               else concat(distinct_id, coalesce(json_value(properties, '$.session_id'), json_value(properties, '$."$session_id"'), '')) 
+          end as grouping_key,
+          time as conv_time,
+          %s as conv_value
+        from `%s`
+        where date(time) between date '%s' and date '%s' 
+          and %s and event_name = '%s' %s
+      )
+    """, coalesce(rec.scope, 'User'), id_expr, value_expr, events_table, format_date('%Y-%m-%d', rec.date_start), format_date('%Y-%m-%d', rec.date_end), id_predicate, coalesce(rec.conversion_event, ''), conv_filter);
+
+    -------------------------------------------------------------------------
+    -- (4f) Universal Footer
     -------------------------------------------------------------------------
     if rec.conversion_count_all then
-      set conv_side_sql = format("""
-        , conv_side as (
+      set sql_footer = format("""
+        %s
+        , joined as (
           select
-            case when upper(trim('%s')) = 'USER' then %s 
-                 else concat(distinct_id, coalesce(json_value(properties, '$.session_id'), json_value(properties, '$."$session_id"'), '')) 
-            end as grouping_key,
-            time as conv_time,
-            %s as conv_value,
-            1 as conv_count
-          from `%s`
-          where date(time) between date '%s' and date '%s' 
-            and %s and event_name = '%s' %s
+            e.grouping_key, 
+            1 as conv_count, 
+            coalesce(c.conv_value, 0) as conv_value, 
+            pow(coalesce(c.conv_value, 0), 2) as conv_sq_value
+          from exposures_filtered e
+          join conv_side c using (grouping_key)
+          where c.conv_time >= e.exposure_time
         )
-      """, rec.scope, id_expr, value_expr, events_table, format_date('%Y-%m-%d', rec.date_start), format_date('%Y-%m-%d', rec.date_end), id_predicate, rec.conversion_event, conv_filter);
+        select
+          (select count(distinct grouping_key) from exposures_filtered) as user_count,
+          coalesce((select sum(conv_count) from joined), 0) as conversion_count,
+          coalesce((select sum(conv_value) from joined), 0.0) as total_conversion_value,
+          coalesce((select sum(conv_sq_value) from joined), 0.0) as total_conversion_sq_value
+      """, conv_side_sql);
     else
-      set conv_side_sql = format("""
-        , conv_side as (
-          select
-            case when upper(trim('%s')) = 'USER' then %s 
-                 else concat(distinct_id, coalesce(json_value(properties, '$.session_id'), json_value(properties, '$."$session_id"'), '')) 
-            end as grouping_key,
-            min(time) as conv_time,
-            sum(%s) as conv_value,
-            1 as conv_count
-          from `%s`
-          where date(time) between date '%s' and date '%s' 
-            and %s and event_name = '%s' %s
+      set sql_footer = format("""
+        %s
+        , joined_raw as (
+          select e.grouping_key, coalesce(c.conv_value, 0) as conv_value
+          from exposures_filtered e
+          join conv_side c using (grouping_key)
+          where c.conv_time >= e.exposure_time
+        )
+        , joined as (
+          select 
+            grouping_key, 
+            1 as conv_count, 
+            sum(conv_value) as conv_value, 
+            pow(sum(conv_value), 2) as conv_sq_value
+          from joined_raw 
           group by grouping_key
         )
-      """, rec.scope, id_expr, value_expr, events_table, format_date('%Y-%m-%d', rec.date_start), format_date('%Y-%m-%d', rec.date_end), id_predicate, rec.conversion_event, conv_filter);
+        select
+          (select count(distinct grouping_key) from exposures_filtered) as user_count,
+          coalesce((select sum(conv_count) from joined), 0) as conversion_count,
+          coalesce((select sum(conv_value) from joined), 0.0) as total_conversion_value,
+          coalesce((select sum(conv_sq_value) from joined), 0.0) as total_conversion_sq_value
+      """, conv_side_sql);
     end if;
 
     -------------------------------------------------------------------------
     -- (5) User overlap branches
     -------------------------------------------------------------------------
-    if rec.user_overlap in ('First Exposure', 'Last Exposure', 'Exclude') then
+    if upper(trim(coalesce(rec.user_overlap, ''))) in ('FIRST EXPOSURE', 'LAST EXPOSURE', 'EXCLUDE') then
       set sql_header = format("""
         with all_events as (
           select *
@@ -381,19 +421,19 @@ begin
       """,
         events_table, format_date('%Y-%m-%d', rec.date_start), format_date('%Y-%m-%d', rec.date_end), id_predicate,
         extracted_variant_expr,
-        rec.scope, id_expr,
-        rec.experiment_event_name, exp_filter
+        coalesce(rec.scope, 'User'), id_expr,
+        coalesce(rec.experiment_event_name, ''), exp_filter
       );
     end if;
 
-    -- CASE 1: First Exposure
-    if rec.user_overlap = "First Exposure" then
+    if upper(trim(coalesce(rec.user_overlap, ''))) = 'FIRST EXPOSURE' then
       set sql_logic = format("""
         , exposures_first as (
           select grouping_key, exposure_time, variant as variant_label
           from (
             select *, row_number() over (partition by grouping_key order by exposure_time asc) rn
             from exposures_labeled
+            where regexp_contains(variant, r'%s')
           )
           where rn = 1
         ),
@@ -402,62 +442,37 @@ begin
           from exposures_first
           where regexp_contains(trim(variant_label), r'%s')
         )
-        %s,
-        joined as (
-          select
-            e.grouping_key, e.exposure_time, c.conv_time, c.conv_value, c.conv_count
-          from exposures_filtered e
-          join conv_side c using (grouping_key)
-          where c.conv_time > e.exposure_time
-        )
-      """, rec.exp_variant_string, conv_side_sql);
+      """, replace(test_variants_regex, '%', '%%'), replace(coalesce(rec.exp_variant_string, ''), '%', '%%'));
+      set dyn_sql = sql_header || sql_logic || sql_footer;
 
-      set sql_footer = """
-        select
-          (select count(*) from exposures_filtered) as user_count,
-          (select sum(conv_count) from joined) as conversion_count,
-          (select sum(conv_value) from joined) as total_conversion_value,
-          (select sum(conv_value * conv_value) from joined) as total_conversion_sq_value
-      """;
-
-    -- CASE 2: Last Exposure
-    elseif rec.user_overlap = "Last Exposure" then
+    elseif upper(trim(coalesce(rec.user_overlap, ''))) = 'LAST EXPOSURE' then
       set sql_logic = format("""
         , exposures_last_ranked as (
            select grouping_key, variant, exposure_time,
              row_number() over (partition by grouping_key order by exposure_time desc) as rn
            from exposures_labeled
+           where regexp_contains(variant, r'%s')
+        ),
+        final_user_variant as (
+           select grouping_key, variant
+           from exposures_last_ranked
+           where rn = 1 and regexp_contains(trim(variant), r'%s')
         ),
         exposures_filtered as (
-           select grouping_key, exposure_time
-           from exposures_last_ranked
-           where rn = 1 
-             and regexp_contains(trim(variant), r'%s')
+           select e.grouping_key, min(e.exposure_time) as exposure_time
+           from exposures_labeled e
+           join final_user_variant f on e.grouping_key = f.grouping_key and e.variant = f.variant
+           group by e.grouping_key
         )
-        %s, 
-        joined as (
-          select
-            e.grouping_key, e.exposure_time, c.conv_time, c.conv_value, c.conv_count
-          from exposures_filtered e
-          join conv_side c using (grouping_key)
-          where c.conv_time >= e.exposure_time
-        )
-      """, rec.exp_variant_string, conv_side_sql);
+      """, replace(test_variants_regex, '%', '%%'), replace(coalesce(rec.exp_variant_string, ''), '%', '%%'));
+      set dyn_sql = sql_header || sql_logic || sql_footer;
 
-      set sql_footer = """
-        select
-          (select count(*) from exposures_filtered) as user_count,
-          (select sum(conv_count) from joined) as conversion_count,
-          (select sum(conv_value) from joined) as total_conversion_value,
-          (select sum(conv_value * conv_value) from joined) as total_conversion_sq_value
-      """;
-
-    -- CASE 3: Exclude
-    elseif rec.user_overlap = "Exclude" then
+    elseif upper(trim(coalesce(rec.user_overlap, ''))) = 'EXCLUDE' then
       set sql_logic = format("""
         , user_variant_count as (
           select grouping_key, count(distinct variant) as variant_count
           from exposures_labeled
+          where regexp_contains(variant, r'%s')
           group by grouping_key
         ),
         exposures_by_variant_first as (
@@ -472,34 +487,18 @@ begin
           where u.variant_count = 1
             and regexp_contains(trim(e.variant), r'%s')
         )
-        %s,
-        joined as (
-          select
-            e.grouping_key, e.exposure_time, c.conv_time, c.conv_value, c.conv_count
-          from exposures_filtered e
-          join conv_side c using (grouping_key)
-          where c.conv_time > e.exposure_time
-        )
-      """, rec.exp_variant_string, conv_side_sql);
+      """, replace(test_variants_regex, '%', '%%'), replace(coalesce(rec.exp_variant_string, ''), '%', '%%'));
+      set dyn_sql = sql_header || sql_logic || sql_footer;
 
-      set sql_footer = """
-        select
-          (select count(*) from exposures_filtered) as user_count,
-          (select sum(conv_count) from joined) as conversion_count,
-          (select sum(conv_value) from joined) as total_conversion_value,
-          (select sum(conv_value * conv_value) from joined) as total_conversion_sq_value
-      """;
-
-    -- CASE 4: Credit Both
-    elseif rec.user_overlap = "Credit Both" then
-      set sql_header = format("""
+    elseif upper(trim(coalesce(rec.user_overlap, ''))) = 'CREDIT BOTH' then
+      set dyn_sql = format("""
         with all_events as (
           select *
           from `%s`
           where date(time) between date '%s' and date '%s'
             and %s
         ),
-        exposures as (
+        exposures_filtered as (
           select
             case when upper(trim('%s')) = 'USER' then %s
                  else concat(distinct_id, coalesce(json_value(properties, '$.session_id'), json_value(properties, '$."$session_id"'), ''))
@@ -507,39 +506,24 @@ begin
             min(time) as exposure_time
           from all_events
           where event_name = '%s'
-            and regexp_contains(%s, r'%s')
+            and regexp_contains(coalesce(%s, ''), r'%s')
             %s
           group by grouping_key
         )
-        %s,
-        joined as (
-          select
-            e.grouping_key, e.exposure_time, c.conv_time, c.conv_value, c.conv_count
-          from exposures e
-          join conv_side c using (grouping_key)
-          where c.conv_time > e.exposure_time
-        )
       """,
         events_table, format_date('%Y-%m-%d', rec.date_start), format_date('%Y-%m-%d', rec.date_end), id_predicate,
-        rec.scope, id_expr,
-        rec.experiment_event_name, where_variant_expr, rec.exp_variant_string, exp_filter,
-        conv_side_sql
+        coalesce(rec.scope, 'User'), id_expr,
+        coalesce(rec.experiment_event_name, ''), where_variant_expr, replace(coalesce(rec.exp_variant_string, ''), '%', '%%'), exp_filter
       );
-      set sql_logic = "";
-      set sql_footer = """
-        select
-          (select count(*) from exposures) as user_count,
-          (select sum(conv_count) from joined) as conversion_count,
-          (select sum(conv_value) from joined) as total_conversion_value,
-          (select sum(conv_value * conv_value) from joined) as total_conversion_sq_value
-      """;
+      set dyn_sql = dyn_sql || sql_footer;
+
+    else
+      set dyn_sql = null;
     end if;
 
     -------------------------------------------------------------------------
     -- (6) Execute
     -------------------------------------------------------------------------
-    set dyn_sql = concat(sql_header, sql_logic, sql_footer);
-
     if dyn_sql is not null and length(dyn_sql) > 0 then
       execute immediate dyn_sql into user_count, conversion_count, total_conversion_value, total_conversion_sq_value;
 
@@ -560,7 +544,7 @@ begin
       );
     end if;
 
-  end for;
+    end for;
     
     ----------------------------------------------------------------------------
     -- (7) Final pivot + merge

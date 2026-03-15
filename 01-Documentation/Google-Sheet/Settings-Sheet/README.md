@@ -76,8 +76,7 @@ You may have to scroll sideways in the table below to see all the settings.
     </tr>
 	<tr>
       <th scope="row" style="text-align: left;">AI Prompt</th>
-      <td><strong>Prompt suggesion 1. Needs a manual inserted Sample Size (recommended):</strong></br>
-	  You are an automated data reporting system writing a formal summary for an executive dashboard. 
+      <td>You are an automated data reporting system writing a formal summary for an executive dashboard. 
 Write exactly 2 to 6 concise sentences summarizing the following A/B test results. Begin your output directly with the analytical summary. 
 
 Follow these rules strictly:
@@ -87,22 +86,6 @@ Follow these rules strictly:
 4. Sample Size Warning: The required total target sample size for this test is {{TARGET_SAMPLE}}. If the combined Total Sample Size (Variant A + Variant B) is less than this target, you MUST warn the audience about the high risk of a "false positive" (Type 1 error). 
 5. Underpowered Warning: If the total target size is set very low (below 1000), warn the audience that the test may be underpowered to reliably detect meaningful differences.
 6. Duration & Conclusion Strategy: Look at the "Estimated Days Remaining". 
-   - If it is 0 days: State that the target sample size has been met and recommend concluding the test. 
-   - If it is between 1 and 30 days: Recommend letting the test run for that specific number of days. 
-   - If it is greater than 30 days: DO NOT recommend letting it run. Instead, explicitly warn the audience that the site lacks sufficient daily traffic to reach statistical significance in a reasonable timeframe (under 30 days), and recommend either aborting the test or re-evaluating the traffic allocation strategy.
-   
-<strong>Prompt suggesion 2. This will make Gemini ignore {{TARGET_SAMPLE}}, and instead try to figure this out itself. Adjust Statistical Power and Relative MDE according to your business:</strong></br>
-You are an automated data reporting system writing a formal summary for an executive dashboard. 
-Write exactly 2 to 6 concise sentences summarizing the following A/B test results. Begin your output directly with the analytical summary. 
-
-Follow these rules strictly:
-1. Winners & Significance: Mention if the test reached the Required Confidence Level for "Conversion Rate", "Mean Value", or both. State which variant is the winner, or if the test is inconclusive. 
-2. Business Impact: If the test involves a "Mean Value", state the Total Value driven by each variant. Treat "Total Value" as a unitless number (DO NOT add currency symbols).
-3. Formatting: When citing statistical evidence, explicitly state whether you are referring to the "Conversion P-Value" or the "Value P-Value". Do not use scientific notation. Do not mention any metrics marked as N/A.
-4. IMPORTANT RULE: Ignore the {{TARGET_SAMPLE}} information. Instead, to determine if traffic is sufficient, calculate the required sample size assuming an industry-standard Statistical Power of 80% (0.80) and a Relative MDE of 5%.
-5. Sample Size Warning: Use the baseline conversion rate derived from the calculated data in 4. If the combined Total Sample Size (Variant A + Variant B) is less than this target, you MUST warn the audience about the high risk of a "false positive" (Type 1 error). 
-6. Underpowered Warning: If the total target size is set very low (below 1000), warn the audience that the test may be underpowered to reliably detect meaningful differences.
-7. Duration & Conclusion Strategy: Look at the "Estimated Days Remaining". 
    - If it is 0 days: State that the target sample size has been met and recommend concluding the test. 
    - If it is between 1 and 30 days: Recommend letting the test run for that specific number of days. 
    - If it is greater than 30 days: DO NOT recommend letting it run. Instead, explicitly warn the audience that the site lacks sufficient daily traffic to reach statistical significance in a reasonable timeframe (under 30 days), and recommend either aborting the test or re-evaluating the traffic allocation strategy.

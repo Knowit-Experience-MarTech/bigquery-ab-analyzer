@@ -36,7 +36,7 @@ Right now, the connection exists, but it doesn't have the security clearance to 
 ## Step 4: Setup Query for connecting to Gemini
 
 We are going to use [**Gemini model 2.5 Flash**](https://docs.cloud.google.com/vertex-ai/generative-ai/docs/models/gemini/2-5-flash).
-This is a fast and cheap model.
+This is a fast and cheap model. At the time of writing, this is the latest "stable" model.
 
 Run this once in your BigQuery editor (adjusting your project/dataset/location/connection names):
 
