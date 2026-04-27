@@ -7,7 +7,7 @@ If you haven't done so already, do the following Google Sheet setup:
 1. Create a folder in **Google Drive** for the **BigQuery A/B Analyzer** solution.
 	1. Within that folder, create a **Images** folder.
 		1. Change **sharing** on the **Images** folder to **Anyone on the Internet with the link can view**.
-2. Copy the [**Google Sheet**](https://docs.google.com/spreadsheets/d/1voZiTk-JD6OK9PDlGaqJh4CBOPwTbxWnnrhrZMy4-Q8/edit?usp=sharing) into the **BigQuery A/B Analyzer** folder.
+2. Copy the [**Google Sheet**](https://docs.google.com/spreadsheets/d/1AXOdyBnTem0ZVyaL0iPmcoeWXBh5lf-NO80CqtsdSE0/edit?usp=sharing) into the **BigQuery A/B Analyzer** folder.
 	1. Go to the [**Settings** sheet](Settings-Sheet). Follow the setup there.
 
 Almost everything is powered by **[Apps Script](Apps-Script)**.
@@ -321,6 +321,75 @@ Filters allow you to zoom in on specific segments (e.g., "Mobile Users Only").
       <td>Text</td>
       <td>Added via button</td>
       <td>Notes about the filter. Notes are automatically generated but can be overwritten.</td>
+    </tr>
+  </tbody>
+</table>
+
+### Funnels Sheet
+
+To create a **Funnel** for your experiment, do the following:
+
+1. Tick the **Funnel Checkbox** (Column AC) in the **Experiments Sheet**.
+2. Go to the **Funnels Sheet**.
+	1. **Step 1** has been created for the selected experiment. Make the adjustments for this step according to the table below.
+	2. To add a new step, make sure the step you want to make a step after is selected (some cell in this step is selected).
+		1. Click **Add Funnel Step** button.
+	3. Repeat until you have created all your steps.
+
+<table>
+  <caption>Funnel Configuration</caption>
+  <thead>
+    <tr>
+      <th scope="col">Column</th>
+      <th scope="col">Type</th>
+      <th scope="col">Value(s)</th>
+      <th scope="col">Description</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <th scope="row" style="text-align: left;">ID</th>
+      <td>Number</td>
+      <td>1</td>
+      <td><strong>ID</strong> of the experiment. Automatically inserted.</td>
+    </tr>
+    <tr>
+      <th scope="row" style="text-align: left;">Funnel Step</th>
+      <td>Number</td>
+      <td><code>2</code></td>
+      <td>Funnel Step Number</td>
+    </tr>
+    <tr>
+      <th scope="row" style="text-align: left;" rowspan="3">Variant</th>
+      <td rowspan="3">Dropdown</td>
+      <td>Both</td>
+      <td rowspan="3">Select which variant the funnel step is for (Both, A or B).</td>
+    </tr>
+    <tr><td>A</td></tr>
+    <tr><td>B</td></tr>	
+    <tr>
+      <th scope="row" style="text-align: left;">Event Name</th>
+      <td>Dropdown</td>
+      <td><code>begin_checkout</code></td>
+      <td>Select <strong>Event Name</strong> for the step.</td>
+    </tr>
+    <tr>
+      <th scope="row" style="text-align: left;">Filter</th>
+      <td>Checkbox</td>
+      <td>✔</td>
+      <td>Tick this checkbox if you need to filter the step.</td>
+    </tr>
+    <tr>
+      <th scope="row" style="text-align: left;">Filter Field</th>
+      <td>Dropdown</td>
+      <td>page_location</td>
+      <td>Event Parameter that you needs to filter.</td>
+    </tr>
+    <tr>
+      <th scope="row" style="text-align: left;">Filter Value</th>
+      <td>Text</td>
+      <td><code>\/my-awesome-page$</code></td>
+      <td>Parameter value matching uses regex (<code>REGEXP_CONTAINS</code>).</td>
     </tr>
   </tbody>
 </table>

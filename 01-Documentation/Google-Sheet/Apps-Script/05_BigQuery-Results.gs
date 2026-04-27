@@ -191,14 +191,14 @@ function downloadQueryInformationData() {
     resultsSheet.getRange(firstRow, 1, data.length, data[0].length).setValues(data);
     
     // --- UPDATED FORMATTING HERE ---
-    resultsSheet.getRange(firstRow, 1, data.length, 2).setNumberFormat("00");
-    resultsSheet.getRange(firstRow, 2, data.length, 1).setNumberFormat("yyyy-mm-dd hh:mm");
+    resultsSheet.getRange(firstRow, 1, data.length, 2).setNumberFormat("00").setFontWeight("normal").setFontColor("black");
+    resultsSheet.getRange(firstRow, 2, data.length, 1).setNumberFormat("yyyy-mm-dd hh:mm").setFontWeight("normal").setFontColor("black");
     
-    resultsSheet.getRange(firstRow, 4, data.length, 1).setNumberFormat("#,##0");
-    resultsSheet.getRange(firstRow, 5, data.length, 1).setHorizontalAlignment("right")
-    resultsSheet.getRange(firstRow, 6, data.length, 2).setNumberFormat("$#,##0.0000");
-    resultsSheet.getRange(firstRow, 7, data.length, 1).insertCheckboxes().setHorizontalAlignment("center");
-    resultsSheet.getRange(firstRow, 1, firstRow-1, resultsSheet.getMaxColumns()).setWrap(true).setVerticalAlignment("top");
+    resultsSheet.getRange(firstRow, 4, data.length, 1).setNumberFormat("#,##0").setFontWeight("normal").setFontColor("black");;
+    resultsSheet.getRange(firstRow, 5, data.length, 1).setHorizontalAlignment("right").setFontWeight("normal").setFontColor("black");
+    resultsSheet.getRange(firstRow, 6, data.length, 2).setNumberFormat("$#,##0.0000").setFontWeight("normal").setFontColor("black");
+    resultsSheet.getRange(firstRow, 7, data.length, 1).insertCheckboxes().setHorizontalAlignment("center").setFontWeight("normal").setFontColor("black");
+    resultsSheet.getRange(firstRow, 1, firstRow-1, resultsSheet.getMaxColumns()).setWrap(true).setVerticalAlignment("top").setFontWeight("normal").setFontColor("black");
     
     formatQueryInformationsData(resultsSheet, firstRow);
 

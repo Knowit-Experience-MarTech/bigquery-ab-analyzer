@@ -61,4 +61,5 @@ create or replace model `your-dataset.bigquery_ab_analyzer.gemini_narrator` -- R
 
 ## Cost
 
-* Cost for using Gemini [is listed here](https://cloud.google.com/vertex-ai/generative-ai/pricing)
+* The cost of using Gemini for these types of analysis is minimal.
+	* Gemini pricing [is listed here](https://cloud.google.com/vertex-ai/generative-ai/pricing).

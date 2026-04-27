@@ -1,4 +1,4 @@
-# Looker Studio - Calculated Fields
+# Data Studio - Calculated Fields
 
 If you need to recreate Calculated Fields, they are all described here.
 
@@ -80,17 +80,17 @@ CONTAINS_TEXT(LOWER(experiment_name), LOWER(Experiment Name Search))
 
 Makes a **URL** based on **Experiment Name**.
 
-The URL must be edited to match your Looker Studio URLs.
+The URL must be edited to match your Data Studio URLs.
 
 * **Field Name:** Experiment Name URL \[Calc\]
 * **Field ID:** experiment_name_url_calc
 
 **Formula:**
 ```javascript
-hyperlink(concat("https://lookerstudio.google.com/reporting/XXX/page/p_gajqy638qd?params=%7B%22df22%22:%22include%25EE%2580%25800%25EE%2580%2580IN%25EE%2580%2580",id,"%22%7D"),experiment_name)
+hyperlink(concat("https://datastudio.google.com/reporting/XXX/page/p_gajqy638qd?params=%7B%22df22%22:%22include%25EE%2580%25800%25EE%2580%2580IN%25EE%2580%2580",id,"%22%7D"),experiment_name)
 ```
 ##### How to create the URL
-Replace the **XXX** part of URL in the formula above with the **ID** found in YOUR Looker Studio URL.
+Replace the **XXX** part of URL in the formula above with the **ID** found in YOUR Data Studio URL.
 If that doesn't work, this is how to recreate the URL from scratch:
 
 1. Navigate to the **BigQuery A/B Analyzer Result** report

@@ -35,6 +35,7 @@ function onOpen() {
 
 const experimentSheetName = "Experiments";
 const filtersSheetName = "Filters";
+const funnelSheetName = "Funnels";
 const calculatorSheetName = "Calculator";
 const queryInfoSheetName = "Query Info";
 const settingsSheetName = "Settings";
@@ -69,10 +70,11 @@ const idColumn = 1,                         // Column A - idColumn
   experimentVariantParameterColumn = 26,    // Column Z - Experiment Variant String used in BQ
   experimentEventValueParameterColumn = 27, // Column AA - Experiment Value used in BQ
   userOverlapColumn = 28,                   // Column AB - User Overlap
-  aiTotalSampleSize = 29,                   // Column AC - User Overlap
-  linksColumn = 30,                         // Column AD - Links
-  imagesColumn = 31,                        // Column AE - Images
-  editExperimentColumn = 32;                // Column AF - Edit Experiment
+  funnelsColumn = 29,                       // Column AC - Funnels
+  aiTotalSampleSize = 30,                   // Column AD - AI Total Sample Size
+  linksColumn = 31,                         // Column AE - Links
+  imagesColumn = 32,                        // Column AF - Images
+  editExperimentColumn = 33;                // Column AG - Edit Experiment
 
 function applyMergesForBlock(startRow) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
@@ -107,6 +109,7 @@ function applyMergesForBlock(startRow) {
   sheet.getRange(firstRow, aiTotalSampleSize, 2, 1).merge();
   sheet.getRange(firstRow, linksColumn, 2, 1).merge();
   sheet.getRange(firstRow, editExperimentColumn, 2, 1).merge();
+  sheet.getRange(firstRow, funnelsColumn, 2, 1).merge();
 }
 
 /**
@@ -170,6 +173,24 @@ function getExperimentEventValueParamDropdownRule() {
   return SpreadsheetApp.newDataValidation()
     .requireValueInRange(rng, true)
     .setAllowInvalid(true)
+    .build();
+}
+
+/**
+ * Builds a data validation rule for Funnel Parameters
+ * Pulls exclusively from "DropdownLookupFilterFields" where Scope = "Event"
+ */
+function getFunnelEventParamsRule() {
+  const map = getFilterFieldsMap(); // Your existing helper function
+  const eventParams = map.event || [];
+  
+  if (eventParams.length === 0) {
+    return null; // Return nothing if the list is empty
+  }
+  
+  return SpreadsheetApp.newDataValidation()
+    .requireValueInList(eventParams, true)
+    .setAllowInvalid(true) // Allows manual override just in case
     .build();
 }
 
@@ -270,6 +291,11 @@ function insertRowsAndMerge() {
   const conversionCountCell = sheet.getRange(firstRow, conversionEventCountColumn);
     conversionCountCell.insertCheckboxes();
     conversionCountCell.setValue(false);
+
+  // Insert a checkbox into merged Column Funnels and default to unchecked
+  const funnelsCell = sheet.getRange(firstRow, funnelsColumn);
+    funnelsCell.insertCheckboxes();
+    funnelsCell.setValue(false);
 
   // Apply the Conversion Event dropdown (Event Names) to the merged 2-row cell in Column G
   try {
@@ -533,7 +559,7 @@ function onEdit(e) {
   }
 
   // ==========================================
-  // 3. EXPERIMENTS SHEET ROUTER (The Core Fix)
+  // 3. EXPERIMENTS SHEET ROUTER
   // ==========================================
   if (sheetName === experimentSheetName) {
 
@@ -710,6 +736,82 @@ function onEdit(e) {
       if (typeof filtersSeedFromExperimentBlock === 'function') {
          filtersSeedFromExperimentBlock(sheet, topRowSync, { useIdFrom: 'id' });
       }
+    }
+
+    // --- Funnels Toggle (analyze_funnel) ---
+    if (editedCol === funnelsColumn) {
+      const topRow = ((editedRow - firstRow) % 2 === 0) ? editedRow : editedRow - 1;
+      const isChecked = !!editedRange.getValue();
+      
+      if (isChecked) {
+        // Grab the ID. If it's missing, fall back to Experiment Name or Row Number
+        const expId = String(sheet.getRange(topRow, idColumn).getValue() || "").trim() || 
+                      String(sheet.getRange(topRow, experimentNameColumn).getValue() || "").trim() || 
+                      String(topRow);
+                      
+        if (expId) {
+          const funnelsSheet = ss.getSheetByName(funnelSheetName);
+          if (!funnelsSheet) {
+            ss.toast("Funnels sheet not found. Please create it.", "Error", 5);
+            return;
+          }
+          
+          // Check if funnel steps already exist for this ID (starts checking at row 5)
+          const fLastRow = funnelsSheet.getLastRow();
+          let exists = false;
+          if (fLastRow >= 5) {
+            const idValues = funnelsSheet.getRange(5, 1, fLastRow - 4, 1).getValues();
+            for (let i = 0; i < idValues.length; i++) {
+              if (String(idValues[i][0]).trim() === expId) {
+                exists = true;
+                break;
+              }
+            }
+          }
+          
+          // If no existing rows are found, initialize Step 1
+          if (!exists) {
+            const targetRow = Math.max(5, fLastRow + 1);
+            
+            // Col A, B, C: ID, Step Number, and Variant
+            funnelsSheet.getRange(targetRow, 1).setValue(expId);
+            funnelsSheet.getRange(targetRow, 2).setValue(1);
+            funnelsSheet.getRange(targetRow, 3).setValue("Both"); // Default to apply to all variants
+            
+            // Col C: Add Variant Dropdown
+            const variantRule = SpreadsheetApp.newDataValidation()
+              .requireValueInList(["Both", "A", "B"], true).build();
+            funnelsSheet.getRange(targetRow, 3).setDataValidation(variantRule);
+            
+            // Col E: Filter Checkbox (Shifted from D)
+            funnelsSheet.getRange(targetRow, 5).insertCheckboxes().setValue(false);
+            
+            // Col D: Event Name Dropdown (Shifted from C)
+            try {
+              const eventsRule = getEventsDropdownRule();
+              funnelsSheet.getRange(targetRow, 4).setDataValidation(eventsRule);
+            } catch(err) { }
+            
+            // Col F: Filter Parameter Dropdown (Shifted from E)
+            try {
+              const paramsRule = getFunnelEventParamsRule();
+              if (paramsRule) {
+                 funnelsSheet.getRange(targetRow, 6).setDataValidation(paramsRule);
+              }
+            } catch(err) { }
+            
+            // Format Background Colors and force normal font weight
+            const bgColor = (targetRow % 2 !== 0) ? '#ffffff' : '#f1f1f1';
+            funnelsSheet.getRange(targetRow, 1, 1, funnelsSheet.getMaxColumns())
+              .setBackground(bgColor)
+              .setFontColor('#000000')
+              .setFontWeight('normal');
+            
+            ss.toast("Funnel initialized! Head to the Funnels tab to configure your steps.", "Funnels", 5);
+          }
+        }
+      }
+      return;
     }
   }
 
@@ -1274,6 +1376,10 @@ function copyCheckedExperiments() {
     sheet.getRange(firstRow, variantSettingsColumn, 2, 1).setDataValidation(variantSettingsRule);
     sheet.getRange(firstRow, variantSettingsColumn).setValue(originalVariantSetting);
 
+    if (typeof enforceScopeForIdentitySource === 'function') {
+      enforceScopeForIdentitySource(sheet, firstRow);
+    }
+
     // Apply (un)merge for target columns based on setting
     if (typeof enforceVariantSettingsForBlock === 'function') {
       enforceVariantSettingsForBlock(sheet, firstRow);
@@ -1429,4 +1535,80 @@ function tickAllQueryInfoCheckboxes() {
         : `No checkboxes found.`;
 
   ss.toast(msg, "Query Info", 4); // subtle toast for 4 seconds
+}
+
+/**
+ * Attached to a button on the "Funnels" sheet.
+ * Inserts a row below the active cell, copying the Experiment ID, Variant,
+ * incrementing the step number, applying dropdowns, and formatting colors.
+ */
+function addFunnelStepBelow() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const activeSheet = ss.getActiveSheet();
+  
+  // Guardrail: Ensure they are actually on the Funnels sheet
+  if (activeSheet.getName() !== funnelSheetName) {
+    ss.toast("Please run this from the Funnels sheet.", "Error", 5);
+    return;
+  }
+  
+  const activeRange = activeSheet.getActiveRange();
+  const currentRow = activeRange.getRow();
+  
+  if (currentRow < 5) {
+    ss.toast("Please select a valid funnel step row (Row 5 or below).", "Error", 5);
+    return;
+  }
+  
+  // Get data from the currently selected row (Now grabbing Variant too)
+  const currentId = activeSheet.getRange(currentRow, 1).getValue();
+  const currentStepNum = parseInt(activeSheet.getRange(currentRow, 2).getValue(), 10);
+  const currentVariant = activeSheet.getRange(currentRow, 3).getValue(); // Col C
+  
+  if (!currentId || isNaN(currentStepNum)) {
+    ss.toast("Selected row does not appear to be a valid funnel step.", "Error", 5);
+    return;
+  }
+  
+  // Insert row below
+  activeSheet.insertRowAfter(currentRow);
+  const newRow = currentRow + 1;
+  
+  // Set values: Copy ID, Add 1 to Step Number, Copy Variant
+  activeSheet.getRange(newRow, 1).setValue(currentId);
+  activeSheet.getRange(newRow, 2).setValue(currentStepNum + 1);
+  activeSheet.getRange(newRow, 3).setValue(currentVariant || "Both");
+  
+  // Col C: Apply Variant Dropdown
+  const variantRule = SpreadsheetApp.newDataValidation()
+    .requireValueInList(["Both", "A", "B"], true).build();
+  activeSheet.getRange(newRow, 3).setDataValidation(variantRule);
+  
+  // Col E (was 4): Apply Checkbox
+  activeSheet.getRange(newRow, 5).insertCheckboxes().setValue(false);
+  
+  // Col D (was 3): Apply Event Name Dropdown
+  try {
+    const eventsRule = getEventsDropdownRule();
+    activeSheet.getRange(newRow, 4).setDataValidation(eventsRule);
+  } catch(e) { }
+  
+  // Col F (was 5): Apply Filter Parameter Dropdown
+  try {
+    const paramsRule = getFunnelEventParamsRule();
+    if (paramsRule) {
+       activeSheet.getRange(newRow, 6).setDataValidation(paramsRule);
+    }
+  } catch(e) { }
+  
+  // Format Background Colors (Odd Rows = White, Even Rows = Light Grey)
+  const bgColor = (newRow % 2 !== 0) ? '#ffffff' : '#f1f1f1';
+  const maxCols = activeSheet.getMaxColumns();
+  
+  activeSheet.getRange(newRow, 1, 1, maxCols)
+    .setBackground(bgColor)
+    .setFontColor('#000000')
+    .setFontWeight('normal');
+  
+  ss.toast("Added Step " + (currentStepNum + 1) + " for Experiment " + currentId, "Funnels", 3);
 }

@@ -146,10 +146,37 @@ create table if not exists `your_project.bigquery_ab_analyzer.experiments_query_
   estimated_cost_usd numeric options(description='Estimation of cost in USD.')
 );
 
+create table if not exists `your_project.bigquery_ab_analyzer.experiments_funnel_report` (
+  id string 
+    options(description="The unique identifier for the experiment."),
+  variant string 
+    options(description="The experiment variant (e.g., 'A', 'B')."),
+  step_number int64 
+    options(description="The sequential number of the funnel step (1 = first step)."),
+  step_name string 
+    options(description="The GA4 event name representing this step in the funnel."),
+  participants int64 
+    options(description="The number of unique users or sessions (based on experiment scope) that successfully reached this step."),
+  avg_time_from_previous_sec float64 
+    options(description="The average time in seconds it took participants to reach this step from the immediately preceding step. Step 1 will always be 0."),
+  median_time_from_previous_sec float64 
+    options(description="The median time in seconds it took participants to reach this step from the immediately preceding step. Step 1 will always be 0."),
+  drop_off_rate_from_previous float64 
+    options(description="The percentage of participants from the previous step who did not make it to this step (e.g., 0.50 = 50% drop-off)."),
+  total_conversion_rate float64 
+    options(description="The percentage of participants from Step 1 who successfully reached this step (e.g., 0.10 = 10% conversion)."),
+  date_last_analyzed date 
+    options(description="The date this funnel data was last calculated.")
+);
+
 /*** ALTER TABLES ***/ 
 alter table `your_project.bigquery_ab_analyzer.experiments`
 add column if not exists ai_total_target_sample int64 
-  options(description='Total target sample size before AI will recommend the output. This is also known as "Fixed horizon".');
+  options(description='Total target sample size before AI will recommend the output. This is also known as Fixed horizon.'),
+add column if not exists analyze_funnel bool 
+  options(description='Toggles the dynamic funnel analysis feature on or off for this experiment.'),
+add column if not exists funnel_steps string 
+  options(description='Comma-separated list of GA4 event names defining the funnel steps (e.g., "select_item, view_item, add_to_cart, purchase").');
   
 alter table `your_project.bigquery_ab_analyzer.experiments_report`
 add column if not exists ai_summary string 
@@ -157,14 +184,14 @@ add column if not exists ai_summary string
 add column if not exists total_conversion_value_a float64 
   options(description="Total Conversion Value for Variant A."),
 add column if not exists total_conversion_value_b float64
-  options(description="Total Conversion Value for Variant B.");
+  options(description="Total Conversion Value for Variant B."),
+add column if not exists analyze_funnel bool 
+  options(description="Indicates if a dynamic funnel analysis was run for this experiment.");
   
 /*** DROP TABLES ***/
 alter table `your_project.bigquery_ab_analyzer.experiments`
 drop column if exists query_information_logging,
-drop column if exists query_price_per_tib,
-drop column if exists ai_summary_activated,
-drop column if exists ai_total_target_sample;
+drop column if exists query_price_per_tib;
   
 /*** CREATE USER DEFINED FUNCTIONS (UDF) ***/
 /*** function 01: z_score_proportion ***/

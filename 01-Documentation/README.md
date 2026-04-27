@@ -43,7 +43,7 @@ Fill out a row in the Experiments tab (see [**Experiments sheet**](Google-Sheet/
 	* The system validates your inputs, uploads the config to BigQuery, and runs the statistics.
 	
 ### Step D: View Results
-Once the job finishes, you can download the data manually into the **Results tab** or view the result in **Looker Studio**.
+Once the job finishes, you can download the data manually into the **Results tab** or view the result in **Data Studio**.
 
 * Green: Statistically Significant result.
 * Red: Not Significant.

@@ -16,7 +16,7 @@ The framework supports the following tools:
 * [Mixpanel](https://mixpanel.com/home/)
 * [PostHog](https://posthog.com/)
 
-The solution is built around **Google Sheet**, **BigQuery**, **Vertex AI** and **Looker Studio**.
+The solution is built around **Google Sheet**, **BigQuery**, **Vertex AI** and **Data Studio**.
 
 <img src="02-Images/bigqery-ab-analyzer-google-sheet-experiments.png" alt="BigQuery A/B Analyzer - Google Sheet Experiments Tab" />
 
@@ -27,10 +27,10 @@ The solution is built around **Google Sheet**, **BigQuery**, **Vertex AI** and *
 		* [AI Summary](01-Documentation/Google-Cloud/03-AI-Summary) (Optional)
 	2. [Settings sheet](01-Documentation/Google-Sheet/Settings-Sheet)
 2. [Documentation / using the Google Sheet solution](01-Documentation)
-3. [Looker Studio / presenting results](01-Documentation/Looker-Studio)
+3. [Data Studio / presenting results](01-Documentation/Data-Studio)
 
 ## 3. Upgrading
-* [2.0 is latest version](../../releases/tag/v2.0).
+* [2.1 is latest version](../../releases/tag/v2.1).
 
 ## 4. The "Backbone": Configuration-Driven Architecture
 
@@ -63,6 +63,8 @@ Since this framework can analyze "natural" experiments, users might occasionally
 	* **Exclude**: Remove them entirely (Scientific purity).
 	* **Credit Both**: Useful for time-period comparisons.
 	* **First/Last Exposure**: Attribute them to the first or last version they saw.
+	
+<img src="02-Images/bigquery-ab-analyzer-user-overlap.png" alt="BigQuery A/B Analyzer User Overlap illustration" />
 
 ### Metric Flexibility: Beyond Simple Conversion Rates
 
@@ -109,6 +111,23 @@ The framework supports 4 different methods for identifying/analysing users:
 * AI Prompt can be edited in Google Sheet.
 * AI Summary functionality is optional.
 
+### Funnel Analysis: Identifying Drop-off Points
+
+The framework supports multi-step funnel analysis to visualize the user journey and identify precisely where friction occurs.
+
+* **Variant-Specific Funnels**: This architecture allows you to map distinct paths for A and B. This is ideal for testing entirely different architectural flows (e.g., Variant B skips a step or uses a different checkout sequence).
+* **Secondary Goals & Behavioral Shifts**: Use the funnel engine to track complex secondary goals, such as ensuring a new "Recommendations" widget isn't cannibalizing primary product sales by monitoring side-by-side progression rates.
+* **Detailed Funnel Metrics**: The tool calculates conversion rates, drop-off percentages, and the time spent (both average and median) between every stage of the journey.
+* **Deep Insights**: Evaluate specific use cases like Onboarding Flows (did users watch the tutorial before setup?) or Feature Adoption (does engaging with a search filter lead to higher purchase rates down-funnel?).
+
+<img src="02-Images/bigqery-ab-analyzer-data-studio-funnel-report.png" alt="BigQuery A/B Analyzer Data Studio Funnel report" />
+
+* This is a **closed funnel**.
+* **Gemini** is instructed to analyse funnels if activated.
+* Time is calculated from the first time a user interacted with the **event** in the funnel in the analysed period.
+	* If your analysis is **User Scoped**, the time will tell you about user behaviour. Ex. user starts the funnel (view_cart), leaves the site and comes back 2 hours later and completes the funnel (view_cart -> begin_checkout -> purchase). Time between <code>view_cart</code> and <code>begin_checkout</code> will be 2 hours.
+	* If you want to understand friction in the funnel itself, a **Session Scoped** analysis may work better.
+
 ## 6. The Statistical Engine (Calculation Method)
 
 This is where the "magic" happens. The solution does not just count clicks; it uses a set of custom **User Defined Functions** (UDFs) in BigQuery to determine mathematical certainty based on the data type.
@@ -136,11 +155,11 @@ Every time you run the analysis, the system outputs a clear verdict:
 
 ## 7. Reporting
 
-Analysed data can either be downloaded to the Google Sheet, or shown in a Looker Studio dashboard. 
+Analysed data can either be downloaded to the Google Sheet, or shown in a Data Studio dashboard. 
 
-The Looker Studio dashboard is designed to answer "Who won?" at a glance.
+The Data Studio dashboard is designed to answer "Who won?" at a glance.
 
-<img src="02-Images/bigqery-ab-analyzer-looker-studio-report.png" alt="BigQuery A/B Analyzer Looker Studio report" />
+<img src="02-Images/bigqery-ab-analyzer-data-studio-report.png" alt="BigQuery A/B Analyzer Data Studio report" />
 
 ## 8. Query Information
 Before running a massive historical analysis, you can toggle the **Query Information** feature. Run a 1-day sample to see the estimated size and cost, ensuring no BigQuery billing surprises.
@@ -218,10 +237,11 @@ If you need to analyse more than 2 variants, you must do this as individual anal
 	
 ## 14. Summary of Benefits
 
-* **Democratized access**: Define tests in a Google Sheet, not in SQL. Share the results in Looker Studio.
+* **Democratized access**: Define tests in a Google Sheet, not in SQL. Share the results in Data Studio.
 * **Standardized math**: Consistent statistical methods
 * **Scalable execution**: Analyze many experiments without rewriting queries
 * **Flexible metrics**: Conversion, session rates, event intensity, continuous values
+* **Funnel Analysis**: Multi-step journey tracking and drop-off analysis
 * **Better data hygiene**: Overlap handling + filters built in
 * **Works with your stack**: GA4, Firebase, GA4Dataform, Amplitude, Mixpanel, PostHog
 * **Cost control**: No BigQuery cost surprises

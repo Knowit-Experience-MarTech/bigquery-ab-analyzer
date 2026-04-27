@@ -5,7 +5,7 @@
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *     https://www.apache.org/licenses/LICENSE-2.0
+ * https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "as IS" BASIS,
@@ -15,8 +15,8 @@
  */
 
  ----------------------------------------------------------------------------
-	-- Replace "your_project" with your project
-	-- Replace "superform_outputs_XXX" with your data set
+  -- Replace "your_project" with your project
+  -- Replace "superform_outputs_XXX" with your data set
 
   -- CHECK REGION: Replace 'region-eu' with 'region-us' if your data is in USA
 ----------------------------------------------------------------------------
@@ -40,6 +40,24 @@ begin
   declare id_filter               string  default '';
   declare conv_side_sql           string;
   declare value_expr              string  default 'null';
+  
+  -- Funnel Add-on Variables
+  declare funnel_json_str string default null;
+  declare funnel_cte_sql string;
+  declare funnel_select_sql string;
+  declare funnel_steps_json json;
+  declare num_steps int64;
+  declare current_event string;
+  declare current_param_key string;
+  declare current_param_val string;
+  declare param_filter string;
+  declare param_path string;
+  declare union_string string;
+  declare i int64;
+  declare explicit_step int64;
+  declare has_funnel_params bool;
+  declare param_col_sql string;
+  declare funnel_grouping string;
   
   declare sql_header string;
   declare sql_logic  string;
@@ -85,17 +103,20 @@ begin
     if ai_prompt is null or ai_prompt = '' then
       set ai_prompt = concat(
         'You are an automated data reporting system writing a formal summary for an executive dashboard. ',
-        'Write exactly 2 to 6 concise sentences summarizing the following A/B test results. Begin your output directly with the analytical summary. ',
+        'Write exactly 3 to 7 concise sentences summarizing the following A/B test results. Begin your output directly with the analytical summary. ',
         'Follow these rules strictly: ',
-        '1. Winners & Significance: Mention if the test reached the Required Confidence Level for "Conversion Rate", "Mean Value", or both. State which variant is the winner, or if the test is inconclusive. ',
-        '2. Business Impact: If the test involves a "Mean Value", state the Total Value driven by each variant. Treat "Total Value" as a unitless number (DO NOT add currency symbols). ',
+        '1. Winners & Significance: State if the test reached the Required Confidence Level. Declare the winner by explicitly quoting the findings in the "Conversion Details" or "Value Details" fields (e.g., state exactly how much better the winner performed). ',
+        '2. Business Impact: If the test involves a "Mean Value", state the Total Value driven by each variant to provide scale. Treat "Total Value" as a unitless number (DO NOT add currency symbols). ',
         '3. Formatting: When citing statistical evidence, explicitly state whether you are referring to the "Conversion P-Value" or the "Value P-Value". Do not use scientific notation. Do not mention any metrics marked as N/A. ',
         '4. Sample Size Warning: The required total target sample size for this test is {{TARGET_SAMPLE}}. If the combined Total Sample Size (Variant A + Variant B) is less than this target, you MUST warn the audience about the high risk of a "false positive" (Type 1 error). ',
         '5. Underpowered Warning: If the total target size is set very low (below 1000), warn the audience that the test may be underpowered to reliably detect meaningful differences. ',
         '6. Duration & Conclusion Strategy: Look at the "Estimated Days Remaining". ',
         '-- If it is 0 days: State that the target sample size has been met and recommend concluding the test. ',
         '-- If it is between 1 and 30 days: Recommend letting the test run for that specific number of days. ',
-        '-- If it is greater than 30 days: DO NOT recommend letting it run. Instead, explicitly warn the audience that the site lacks sufficient daily traffic to reach statistical significance in a reasonable timeframe (under 30 days), and recommend either aborting the test or re-evaluating the traffic allocation strategy.'
+        '-- If it is greater than 30 days: warn the audience that the site lacks sufficient daily traffic to reach statistical significance in a reasonable timeframe (under 30 days). ',
+        '7. Funnel Bottlenecks: If "FUNNEL JOURNEY DATA" is provided, identify the specific step where the highest percentage of users drop off. Compare Variant A and Variant B to explain exactly WHERE the winning variant is outperforming the loser in the user journey. ',
+        '8. Time Skew Analysis: If both "Median time" and "Average time" are provided for a funnel step, compare them. If the Average is significantly higher than the Median, explicitly state that a segment of users is delaying their action (e.g., leaving and returning later), creating a long-tail delay. ',
+        '9. Output Structure: You MUST format your final response into exactly two paragraphs separated by a blank line. Paragraph 1: The main statistical summary. Paragraph 2: The Funnel & Time Skew analysis.'
       );
     end if;
 
@@ -148,7 +169,6 @@ begin
           set id_filter = "";
         -- Extracts the custom A/B test identifier from the event_params_custom struct
         elseif rec.identity_source = "EXP_DEVICE_ID" then
-          -- Extracts the custom A/B test cookie ID from the event_params_custom struct
           set id_expr = "safe_cast(event_params_custom.exp_device_id as string)";
           set id_predicate = "event_params_custom.exp_device_id is not null and safe_cast(event_params_custom.exp_device_id as string) != ''";
           set id_filter = ""; 
@@ -198,7 +218,6 @@ begin
             -- Check if we are dealing with the nested items array
             if regexp_contains(f.filter_field, r'^items\.') then
               -- Sub-query logic for REPEATED RECORD
-              -- We replace 'items.' with 'it.' to reference the unnested alias
               set check_sql = format("""
                 exists (
                   select 1 from unnest(items) it 
@@ -244,8 +263,7 @@ begin
         end if;
     end if;
 
-
--- 2e) Build Conversion Side CTE (Always RAW for proper timeline filtering)
+    -- 2e) Build Conversion Side CTE
     set conv_side_sql = format("""
       , conv_side as (
         select
@@ -262,6 +280,132 @@ begin
     """, coalesce(rec.scope, 'User'), id_expr, value_expr, 
          format_date('%Y-%m-%d', rec.date_start), format_date('%Y-%m-%d', rec.date_end),
          coalesce(rec.conversion_event, ''), conv_filter);
+
+    ----------------------------------------------------------------------------
+    -- 2f) DATAFORM FUNNEL CTEs
+    ----------------------------------------------------------------------------
+    set funnel_cte_sql = '';
+    set funnel_select_sql = 'cast(null as string)';
+      
+    if coalesce(rec.analyze_funnel, false) = true and coalesce(rec.funnel_steps, '') != '' then
+        
+      set funnel_steps_json = parse_json(rec.funnel_steps);
+      set num_steps = array_length(json_extract_array(rec.funnel_steps));
+      set union_string = '';
+      set i = 1;
+        
+      -- SMART PARAMETER CHECK
+      set has_funnel_params = (
+        select count(1) > 0 
+        from unnest(json_extract_array(rec.funnel_steps)) as f 
+        where json_value(f, '$.param_key') is not null and trim(json_value(f, '$.param_key')) != ''
+      );
+        
+      if has_funnel_params then
+        set param_col_sql = ', event_params';
+      else
+        set param_col_sql = '';
+      end if;
+
+      -- SMART GROUPING CHECK
+      if upper(trim(coalesce(rec.scope, 'User'))) = 'SESSION' then
+        set funnel_grouping = "concat(user_pseudo_id, cast(event_params.ga_session_id as string))";
+      else
+        set funnel_grouping = id_expr;
+      end if;
+          
+      -- 1. Base Funnel CTE (Note Dataform time.event_timestamp and event_date)
+      set funnel_cte_sql = format("""
+        , funnel_base as (
+          select
+            %s as grouping_key,
+            event_name,
+            timestamp_micros(time.event_timestamp) as event_time
+            %s
+          from all_events
+          where event_date between '%s' and '%s'
+            and event_name in (
+            select distinct json_value(step, '$.event') 
+            from unnest(json_extract_array('%s')) as step
+          )
+        )
+        , step_0 as (
+          select grouping_key, exposure_time as t_0
+          from exposures_filtered
+        )
+      """, funnel_grouping, param_col_sql, format_date('%Y-%m-%d', rec.date_start), format_date('%Y-%m-%d', rec.date_end), rec.funnel_steps);
+
+      -- 2. Dynamically Generate the Cascaded Steps
+      while i <= num_steps do
+        set current_event = json_value(funnel_steps_json[i-1], '$.event');
+        set current_param_key = json_value(funnel_steps_json[i-1], '$.param_key');
+        set current_param_val = json_value(funnel_steps_json[i-1], '$.param_val');
+        set explicit_step = coalesce(cast(json_value(funnel_steps_json[i-1], '$.step_number') as int64), i);
+            
+        set param_filter = '';
+        if current_param_key is not null and current_param_val is not null then
+          
+          -- Dataform format dot-pathing check
+          if strpos(current_param_key, '.') = 0 then
+             set param_path = format("f.event_params.%s", current_param_key);
+          else
+             set param_path = format("f.%s", current_param_key);
+          end if;
+
+          set param_filter = format("""
+            and regexp_contains(safe_cast(%s as string), r'%s')
+          """, param_path, current_param_val);
+        end if;
+
+        if i = 1 then
+          set funnel_cte_sql = funnel_cte_sql || format("""
+            , step_%d as (
+              select s.grouping_key, s.t_0, min(f.event_time) as t_%d
+              from step_%d s
+              left join funnel_base f on s.grouping_key = f.grouping_key 
+                and f.event_name = '%s' 
+                and f.event_time >= s.t_%d
+                %s
+              group by 1, 2
+            )
+          """, i, i, i-1, current_event, i-1, param_filter);
+              
+          set union_string = union_string || format("SELECT %d as step_number, '%s' as step_name, count(t_%d) as participants, 0.0 as avg_time, 0.0 as median_time FROM step_%d\n", explicit_step, coalesce(current_param_val, current_event), i, i);
+        else
+          set funnel_cte_sql = funnel_cte_sql || format("""
+            , step_%d as (
+              select s.*, min(f.event_time) as t_%d
+              from step_%d s
+              left join funnel_base f on s.grouping_key = f.grouping_key 
+                and f.event_name = '%s' 
+                and f.event_time > s.t_%d
+                %s
+              group by %s
+            )
+          """, i, i, i-1, current_event, i-1, param_filter, (select string_agg(cast(x as string), ', ') from unnest(generate_array(1, i+1)) as x));
+              
+          set union_string = union_string || format("UNION ALL\nSELECT %d as step_number, '%s' as step_name, count(t_%d) as participants, coalesce(avg(timestamp_diff(t_%d, t_%d, second)), 0.0) as avg_time, coalesce(approx_quantiles(timestamp_diff(t_%d, t_%d, second), 100)[offset(50)], 0.0) as median_time FROM step_%d\n", explicit_step, coalesce(current_param_val, current_event), i, i, i-1, i, i-1, i);
+        end if;
+            
+        set i = i + 1;
+      end while;
+
+      set funnel_cte_sql = funnel_cte_sql || format("""
+          , funnel_union as ( %s )
+          , funnel_math as (
+          select 
+            step_number, step_name, participants, 
+            avg_time as avg_time_from_previous_sec,
+            median_time as median_time_from_previous_sec,
+            1.0 - safe_divide(participants, lag(participants) over(order by step_number)) as drop_off_rate_from_previous,
+            safe_divide(participants, first_value(participants) over(order by step_number)) as total_conversion_rate
+          from funnel_union
+        )
+      """, union_string);
+
+      set funnel_select_sql = "(select to_json_string(array(select as struct * from funnel_math)))";
+    end if;
+
 
     -- 3. Dynamic SQL Construction (HEADER)
     set sql_header = format("""
@@ -300,10 +444,11 @@ begin
     exposure_guard, exp_filter
     );
 
-    -- 3b) Universal Footer (Filters conversions AFTER exposure, then aggregates)
+    -- 3b) Universal Footer (Includes Funnel Logic)
     if rec.conversion_count_all then
       set sql_footer = format("""
         %s 
+        %s
         , joined as (
           select
             e.grouping_key, 
@@ -318,11 +463,13 @@ begin
           (select count(distinct grouping_key) from exposures_filtered) as user_count,
           coalesce((select sum(conv_count) from joined), 0) as conversion_count,
           coalesce((select sum(conv_value) from joined), 0.0) as total_conversion_value,
-          coalesce((select sum(conv_sq_value) from joined), 0.0) as total_conversion_sq_value
-      """, conv_side_sql);
+          coalesce((select sum(conv_sq_value) from joined), 0.0) as total_conversion_sq_value,
+          %s as funnel_json_str
+      """, conv_side_sql, funnel_cte_sql, funnel_select_sql);
     else
       set sql_footer = format("""
         %s 
+        %s
         , joined_raw as (
           select e.grouping_key, coalesce(c.conv_value, 0) as conv_value
           from exposures_filtered e
@@ -342,8 +489,9 @@ begin
           (select count(distinct grouping_key) from exposures_filtered) as user_count,
           coalesce((select sum(conv_count) from joined), 0) as conversion_count,
           coalesce((select sum(conv_value) from joined), 0.0) as total_conversion_value,
-          coalesce((select sum(conv_sq_value) from joined), 0.0) as total_conversion_sq_value
-      """, conv_side_sql);
+          coalesce((select sum(conv_sq_value) from joined), 0.0) as total_conversion_sq_value,
+          %s as funnel_json_str
+      """, conv_side_sql, funnel_cte_sql, funnel_select_sql);
     end if;
 
 -- =======================================================================
@@ -432,11 +580,10 @@ begin
 
     -- Execute Dynamic SQL
     if dyn_sql is not null then
-      execute immediate dyn_sql into user_count, conversion_count, total_conversion_value, total_conversion_sq_value;
+      execute immediate dyn_sql into user_count, conversion_count, total_conversion_value, total_conversion_sq_value, funnel_json_str;
 
         ----------------------------------------------------------------------------
         -- Stores 1 row per variant run
-        -- CHECK REGION: Replace 'region-eu' with 'region-us' if your data is in USA
         ----------------------------------------------------------------------------
         if query_info_logging then
           insert into bigquery_ab_analyzer_query_information_buffer (id, job_id, bytes_billed)
@@ -446,6 +593,29 @@ begin
             total_bytes_billed
           from `region-eu`.INFORMATION_SCHEMA.JOBS_BY_USER
           where job_id = @@last_job_id;
+        end if;
+
+        -- Funnel Insert Logic
+        delete from `your_project.bigquery_ab_analyzer.experiments_funnel_report` 
+        where id = rec.id and variant = rec.variant;
+
+        if funnel_json_str is not null then
+          insert into `your_project.bigquery_ab_analyzer.experiments_funnel_report` (
+            id, variant, step_number, step_name, participants, 
+            avg_time_from_previous_sec, median_time_from_previous_sec, drop_off_rate_from_previous, total_conversion_rate, date_last_analyzed
+          )
+          select 
+            rec.id, 
+            rec.variant, 
+            cast(json_value(f, '$.step_number') as int64),
+            json_value(f, '$.step_name'),
+            cast(json_value(f, '$.participants') as int64),
+            cast(json_value(f, '$.avg_time_from_previous_sec') as float64),
+            cast(json_value(f, '$.median_time_from_previous_sec') as float64),
+            cast(json_value(f, '$.drop_off_rate_from_previous') as float64),
+            cast(json_value(f, '$.total_conversion_rate') as float64),
+            current_date()
+          from unnest(json_extract_array(funnel_json_str)) as f;
         end if;
 
       insert into results (
@@ -494,6 +664,7 @@ begin
           e.analyze_test,
           e.user_overlap,
           e.date_comparison,
+          e.analyze_funnel,
 
           case
             when e.conversion_count_all then 'Once per Event'
@@ -507,7 +678,7 @@ begin
         and e.analyze_test = true
         group by
           r.id, e.experiment_name, r.scope,
-          e.confidence, e.hypothesis, e.event_value_test, e.analyze_test, e.user_overlap, e.date_comparison, e.identity_source,
+          e.confidence, e.hypothesis, e.event_value_test, e.analyze_test, e.user_overlap, e.date_comparison, e.identity_source, e.analyze_funnel,
           conversions_counting_mode
       ),
       ab as (
@@ -533,6 +704,7 @@ begin
           analyze_test,
           user_overlap,
           date_comparison,
+          analyze_funnel,
           case
             when conv_event_a is null then conv_event_b
             when conv_event_b is null then conv_event_a
@@ -601,6 +773,7 @@ begin
         b.analyze_test,
         b.user_overlap,
         b.date_comparison,
+        b.analyze_funnel,
         b.test_a,
         b.conversion_a,
         b.test_b,
@@ -671,6 +844,7 @@ begin
         conv.analyze_test,
         conv.user_overlap,
         conv.date_comparison,
+        conv.analyze_funnel,
         conv.test_a,
         conv.conversion_a,
         conv.test_b,
@@ -708,6 +882,7 @@ begin
           analyze_test = source.analyze_test,
           user_overlap = source.user_overlap,
           date_comparison = source.date_comparison,
+          analyze_funnel = source.analyze_funnel,
           test_a = source.test_a,
           conversion_a = source.conversion_a,
           test_b = source.test_b,
@@ -742,6 +917,7 @@ begin
           analyze_test,
           user_overlap,
           date_comparison,
+          analyze_funnel,
           test_a,
           conversion_a,
           test_b,
@@ -776,6 +952,7 @@ begin
           source.analyze_test,
           source.user_overlap,
           source.date_comparison,
+          source.analyze_funnel,
           source.test_a,
           source.conversion_a,
           source.test_b,
@@ -860,6 +1037,8 @@ begin
                   'Rate Significant?: ', coalesce(cast(rep.conv_significance as string), 'N/A'), ', ',
                   'Conversion Z-Score: ', coalesce(format('%.4f', rep.conv_z_score), 'N/A'), ', ',
                   'Conversion P-Value: ', coalesce(format('%.4f', rep.conv_p_value), 'N/A'), '. ',
+                  'Conversion Details: ', coalesce(rep.conv_details, 'N/A'), '. ',  -- NEW LINE
+                  
                   '--- MEAN VALUE & TOTAL VALUE --- ',
                   'Variant A Total Value: ', coalesce(format('%.2f', rep.total_conversion_value_a), 'N/A'), ', ',
                   'Variant B Total Value: ', coalesce(format('%.2f', rep.total_conversion_value_b), 'N/A'), ', ',
@@ -867,22 +1046,38 @@ begin
                   'Variant B Mean Value: ', coalesce(format('%.2f', rep.mean_value_b), 'N/A'), ', ',
                   'Value Significant?: ', coalesce(cast(rep.value_significance as string), 'N/A'), ', ',
                   'Value T-Value: ', coalesce(format('%.4f', rep.t_value), 'N/A'), ', ',
-                  'Value P-Value: ', coalesce(format('%.4f', rep.value_p_value), 'N/A'), '.'
+                  'Value P-Value: ', coalesce(format('%.4f', rep.value_p_value), 'N/A'), '. ',
+                  'Value Details: ', coalesce(rep.value_details, 'N/A'), '.\n\n',
+                  
+                  '\n\n--- FUNNEL JOURNEY DATA ---\n',
+                  coalesce(funnel.funnel_text, 'No funnel tracking activated for this test.')
                 ) as prompt
               from `your_project.bigquery_ab_analyzer.experiments_report` rep
               join (
+                select id, max(ai_total_target_sample) as ai_total_target_sample
+                from `your_project.bigquery_ab_analyzer.experiments`
+                where analyze_test = true group by id
+              ) exp on rep.id = exp.id 
+              left join (
+                -- Compressing the entire funnel table into a clean text paragraph with BOTH times
                 select 
                   id, 
-                  max(ai_total_target_sample) as ai_total_target_sample
-                from `your_project.bigquery_ab_analyzer.experiments`
-                where analyze_test = true
+                  string_agg(
+                    format('Variant %s, Step %d (%s): %d users. Drop-off: %.1f%%. Median time: %.1f sec. Average time: %.1f sec.', 
+                      variant, step_number, step_name, participants, 
+                      coalesce(drop_off_rate_from_previous * 100, 0.0), 
+                      coalesce(median_time_from_previous_sec, 0.0), 
+                      coalesce(avg_time_from_previous_sec, 0.0)
+                    ),
+                    '\n' order by variant, step_number
+                  ) as funnel_text
+                from `your_project.bigquery_ab_analyzer.experiments_funnel_report`
                 group by id
-              ) exp 
-                on rep.id = exp.id 
+              ) funnel on rep.id = funnel.id
             ),
             struct(
               0.2 as temperature, 
-              256 as max_output_tokens
+              600 as max_output_tokens
             )
           )
         ) as ai
@@ -899,7 +1094,6 @@ begin
         cast(jobs.total_bytes_billed / active_exps.exp_count as int64)
       from `region-eu`.INFORMATION_SCHEMA.JOBS_BY_USER as jobs
       cross join (
-        -- Find all active experiments in the buffer and count them
         select id, count(*) over() as exp_count 
         from (select distinct id from bigquery_ab_analyzer_query_information_buffer)
       ) as active_exps

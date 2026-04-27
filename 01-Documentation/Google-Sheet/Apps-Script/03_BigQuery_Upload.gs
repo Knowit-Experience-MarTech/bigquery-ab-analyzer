@@ -247,7 +247,8 @@ function exportExperimentsToBigQuery() {
     "analyze_test","event_value_test","hypothesis","confidence","description",
     "scope","identity_source","experiment_event_name","experiment_variant_parameter",
     "experiment_event_value_parameter","user_overlap",
-    "export_mode", "analytics_tool", "ai_total_target_sample"
+    "export_mode", "analytics_tool", "ai_total_target_sample",
+    "analyze_funnel", "funnel_steps"
   ];
   const csv = rows.map(r => cols.map(c => toCsvCell(r[c])).join(",")).join("\n");
   const blob = Utilities.newBlob(csv, "application/octet-stream", "experiments_stage.csv");
@@ -284,7 +285,9 @@ function exportExperimentsToBigQuery() {
         { name: "user_overlap", type: "STRING" },
         { name: "export_mode", type: "STRING" },
         { name: "analytics_tool", type: "STRING" },
-        { name: "ai_total_target_sample", type: "INT64" }
+        { name: "ai_total_target_sample", type: "INT64" },
+        { name: "analyze_funnel", type: "BOOL" },
+        { name: "funnel_steps", type: "STRING" }
       ]}
     }}
   };
@@ -320,7 +323,9 @@ function exportExperimentsToBigQuery() {
     experiment_event_value_parameter= S.experiment_event_value_parameter,
     user_overlap = S.user_overlap,
     analytics_tool = S.analytics_tool,
-    ai_total_target_sample = S.ai_total_target_sample
+    ai_total_target_sample = S.ai_total_target_sample,
+    analyze_funnel = S.analyze_funnel,
+    funnel_steps = S.funnel_steps
   WHEN MATCHED AND UPPER(TRIM(S.export_mode)) = 'UPDATE' THEN UPDATE SET
     experiment_name = S.experiment_name,
     variant_name = S.variant_name,
@@ -333,12 +338,12 @@ function exportExperimentsToBigQuery() {
     id,variant,date_start,date_end,date_comparison,experiment_name,variant_name,
     conversion_event,conversion_count_all, exp_variant_string,analyze_test,event_value_test,hypothesis,confidence,
     description,scope,identity_source,experiment_event_name,experiment_variant_parameter,
-    experiment_event_value_parameter,user_overlap, analytics_tool, ai_total_target_sample
+    experiment_event_value_parameter,user_overlap, analytics_tool, ai_total_target_sample, analyze_funnel, funnel_steps
   ) VALUES (
     S.id,S.variant,S.date_start,S.date_end,S.date_comparison,S.experiment_name,S.variant_name,
     S.conversion_event, S.conversion_count_all, S.exp_variant_string,S.analyze_test,S.event_value_test,S.hypothesis,S.confidence,
     S.description,S.scope,S.identity_source,S.experiment_event_name,S.experiment_variant_parameter,
-    S.experiment_event_value_parameter,S.user_overlap, S.analytics_tool, S.ai_total_target_sample
+    S.experiment_event_value_parameter,S.user_overlap, S.analytics_tool, S.ai_total_target_sample, S.analyze_funnel, S.funnel_steps
   )`;
 
   // Kick the related exports
@@ -431,6 +436,10 @@ function flatten2RowBlocks(sheet) {
     return true;
   }
 
+  // Fetch compiled funnel steps
+  let funnelsMap = {};
+  try { funnelsMap = getFunnelsMap(); } catch (e) { return { error: true }; }
+
   for (let r = firstRow; r <= lastRow; r += 2) {
     const r2 = r + 1; if (r2 > lastRow) break;
 
@@ -467,6 +476,12 @@ function flatten2RowBlocks(sheet) {
     const valExperimentEventValueParameterColumn = sheet.getRange(r, experimentEventValueParameterColumn).getValue();
     const valUserOverlapColum = sheet.getRange(r, userOverlapColumn).getValue();
     const valAiTotalSampleSizeColum = sheet.getRange(r, aiTotalSampleSize).getValue();
+    const valFunnelsColumn = !!sheet.getRange(r, funnelsColumn).getValue(); // Checkbox
+    const idString = String(valIdColumn);
+    
+    // Grab the specific JSON array for Variant A and Variant B
+    const funnelStepsJson_A = (valFunnelsColumn && funnelsMap[idString] && funnelsMap[idString]["A"]) ? funnelsMap[idString]["A"] : null;
+    const funnelStepsJson_B = (valFunnelsColumn && funnelsMap[idString] && funnelsMap[idString]["B"]) ? funnelsMap[idString]["B"] : null;
 
     const valVariantNameColumn_r = sheet.getRange(r, variantNameColumn).getValue();
     const valVariantNameColumn_r2 = sheet.getRange(r2, variantNameColumn).getValue();
@@ -593,7 +608,9 @@ function flatten2RowBlocks(sheet) {
       user_overlap: String(valUserOverlapColum),
       export_mode,
       analytics_tool: valAnalyticsTool,
-      ai_total_target_sample: ai_total_target_sample
+      ai_total_target_sample: ai_total_target_sample,
+      analyze_funnel: valFunnelsColumn,
+      funnel_steps: funnelStepsJson_A
     };
     results.valid.push(rec1);
 
@@ -621,7 +638,9 @@ function flatten2RowBlocks(sheet) {
       user_overlap: String(valUserOverlapColum),
       export_mode,
       analytics_tool: valAnalyticsTool,
-      ai_total_target_sample: ai_total_target_sample
+      ai_total_target_sample: ai_total_target_sample,
+      analyze_funnel: valFunnelsColumn,
+      funnel_steps: funnelStepsJson_B
     };
     results.valid.push(rec2);
   }
@@ -1234,17 +1253,27 @@ function deleteExperiments() {
     }
   }
 
-  // Delete matching Filters rows (by any of the collected keys)
+  // Delete matching Filters and Funnels rows (by any of the collected keys)
   let removedFilters = 0;
-  if (expKeys.size > 0 && typeof filtersDeleteRowsForExperiment === 'function') {
-    removedFilters = filtersDeleteRowsForExperiment(Array.from(expKeys));
-    // keep the named range tidy if helper exists
-    if (typeof filtersUpdateFiltersTableNamedRange === 'function') {
-      filtersUpdateFiltersTableNamedRange();
+  let removedFunnels = 0;
+  
+  if (expKeys.size > 0) {
+    // 1. Delete Filters
+    if (typeof filtersDeleteRowsForExperiment === 'function') {
+      removedFilters = filtersDeleteRowsForExperiment(Array.from(expKeys));
+      // keep the named range tidy if helper exists
+      if (typeof filtersUpdateFiltersTableNamedRange === 'function') {
+        filtersUpdateFiltersTableNamedRange();
+      }
+      // optional: re-apply your block formatting if you use it
+      if (typeof filtersBtnFormatBlocks === 'function') {
+        filtersBtnFormatBlocks();
+      }
     }
-    // optional: re-apply your block formatting if you use it
-    if (typeof filtersBtnFormatBlocks === 'function') {
-      filtersBtnFormatBlocks();
+    
+    // 2. Delete Funnels
+    if (typeof funnelsDeleteRowsForExperiment === 'function') {
+      removedFunnels = funnelsDeleteRowsForExperiment(Array.from(expKeys));
     }
   }
 
@@ -1257,8 +1286,9 @@ function deleteExperiments() {
 
   ui.alert(
     deletedBlocks > 0
-      ? `Deleted ${deletedBlocks} experiment block${deletedBlocks !== 1 ? 's' : ''} from Experiments `
-        + `and ${removedFilters} filter row${removedFilters !== 1 ? 's' : ''} from Filters.`
+      ? `Deleted ${deletedBlocks} experiment block${deletedBlocks !== 1 ? 's' : ''} from Experiments, `
+        + `${removedFilters} filter row${removedFilters !== 1 ? 's' : ''} from Filters, `
+        + `and ${removedFunnels} funnel row${removedFunnels !== 1 ? 's' : ''} from Funnels.`
       : 'No experiments flagged for deletion.'
   );
 }
@@ -1291,6 +1321,36 @@ function filtersDeleteRowsForExperiment(expIdentifiers) {
   return deleted;
 }
 
+// Delete all Funnels rows whose Experiment_ID matches any of the provided identifiers.
+function funnelsDeleteRowsForExperiment(expIdentifiers) {
+  const ss = SpreadsheetApp.getActive();
+  const sh = ss.getSheetByName(funnelSheetName);
+  if (!sh) return 0;
+
+  const ids = (Array.isArray(expIdentifiers) ? expIdentifiers : [expIdentifiers])
+    .map(v => String(v || '').trim())
+    .filter(Boolean);
+  if (!ids.length) return 0;
+
+  const lastRow = sh.getLastRow();
+  if (lastRow < 5) return 0; // Funnel data starts at row 5
+
+  const numRows = lastRow - 5 + 1;
+  // We only need to read Column A (Experiment ID) to find matches
+  const vals = sh.getRange(5, 1, numRows, 1).getValues();
+
+  let deleted = 0;
+  // Loop backwards to safely delete rows without messing up the index
+  for (let i = vals.length - 1; i >= 0; i--) {
+    const rowExpId = String(vals[i][0] || '').trim(); 
+    if (ids.indexOf(rowExpId) !== -1) {
+      sh.deleteRow(5 + i);
+      deleted++;
+    }
+  }
+  return deleted;
+}
+
 /**
  * Deletes rows from three BigQuery tables where the 'id' is in the given list.
  */
@@ -1305,33 +1365,32 @@ function deleteRowsInBigQuery(ids) {
   const imagesTable = ss.getRangeByName("SettingsBigQueryExperimentImagesTable").getValue();
   const filtersTable = ss.getRangeByName("SettingsBigQueryExperimentFiltersTable").getValue();
   const reportsTable = ss.getRangeByName("SettingsBigQueryReportingTable").getValue();
-  const queryInformationTable = ss.getRangeByName("SettingsBigQueryQueryInformationTable").getValue();
+  const queryInformationTable = ss.getRangeByName("SettingsBigQueryQueryInformationTable").getValue(); 
+  // Hardcoded Funnels Table Name
+  const funnelsTable = "experiments_funnel_report"; 
 
   ids = (ids || []).map(normalizeExperimentId).filter(Boolean);
   
   // Build the list of ids as a comma-separated list.
-  // Adjust quoting if your id type is numeric. Here we assume they are strings.
   const idList = ids.map(function(id) { 
     return "'" + id + "'"; 
   }).join(", ");
   
   // Build the DELETE query for each table.
   const queries = [
-    { table: expTable, 
-      query: "DELETE FROM `" + projectId + "." + datasetId + "." + expTable + "` WHERE id IN (" + idList + ")" },
-    { table: linksTable, 
-      query: "DELETE FROM `" + projectId + "." + datasetId + "." + linksTable + "` WHERE id IN (" + idList + ")" },
-    { table: imagesTable, 
-      query: "DELETE FROM `" + projectId + "." + datasetId + "." + imagesTable + "` WHERE id IN (" + idList + ")" },
-    { table: filtersTable, 
-      query: "DELETE FROM `" + projectId + "." + datasetId + "." + filtersTable + "` WHERE id IN (" + idList + ")" },
-    { table: reportsTable, 
-      query: "DELETE FROM `" + projectId + "." + datasetId + "." + reportsTable + "` WHERE id IN (" + idList + ")" },
-    { table: queryInformationTable, 
-      query: "DELETE FROM `" + projectId + "." + datasetId + "." + queryInformationTable + "` WHERE id IN (" + idList + ")" }
+    { table: expTable, query: "DELETE FROM `" + projectId + "." + datasetId + "." + expTable + "` WHERE id IN (" + idList + ")" },
+    { table: linksTable, query: "DELETE FROM `" + projectId + "." + datasetId + "." + linksTable + "` WHERE id IN (" + idList + ")" },
+    { table: imagesTable, query: "DELETE FROM `" + projectId + "." + datasetId + "." + imagesTable + "` WHERE id IN (" + idList + ")" },
+    { table: filtersTable, query: "DELETE FROM `" + projectId + "." + datasetId + "." + filtersTable + "` WHERE id IN (" + idList + ")" },
+    { table: funnelsTable, query: "DELETE FROM `" + projectId + "." + datasetId + "." + funnelsTable + "` WHERE id IN (" + idList + ")" }, // <--- Hardcoded Funnels deletion
+    { table: reportsTable, query: "DELETE FROM `" + projectId + "." + datasetId + "." + reportsTable + "` WHERE id IN (" + idList + ")" },
+    { table: queryInformationTable, query: "DELETE FROM `" + projectId + "." + datasetId + "." + queryInformationTable + "` WHERE id IN (" + idList + ")" }
   ];
   
   queries.forEach(function(item) {
+    // Only attempt deletion if a table name is actually provided
+    if (!item.table) return; 
+
     Logger.log("Deleting from table %s with query: %s", item.table, item.query);
     const jobConfig = {
       configuration: {
@@ -1343,6 +1402,7 @@ function deleteRowsInBigQuery(ids) {
     };
     const job = BigQuery.Jobs.insert(jobConfig, projectId);
     const jobId = job.jobReference.jobId;
+    
     // Optionally wait for job completion
     const finishedJob = BigQuery.Jobs.get(projectId, jobId);
     if (finishedJob.status && finishedJob.status.errorResult) {
@@ -1366,4 +1426,83 @@ function ISVALIDREGEX(regexString) {
   } catch (e) {
     return false; 
   }
+}
+
+/*********************************************************
+ * FUNNELS COMPILER: Gathers and formats funnel steps into JSON (Variant Aware)
+ *********************************************************/
+function getFunnelsMap() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = ss.getSheetByName(funnelSheetName);
+  const map = {};
+  
+  if (!sheet) return map;
+  
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 5) return map; // No data yet
+
+  // Read data (Now 7 columns wide due to new Variant column)
+  // Col A(0): ID, B(1): Step, C(2): Variant, D(3): Event, E(4): Filter On, F(5): Param, G(6): Value
+  const data = sheet.getRange(5, 1, lastRow - 4, 7).getValues();
+  const grouped = {};
+
+  // 1. Group by ID and Variant
+  for (let i = 0; i < data.length; i++) {
+    const row = data[i];
+    const id = normalizeExperimentId(row[0]);
+    if (!id) continue;
+    
+    const stepNum = parseInt(row[1], 10);
+    const variantRaw = String(row[2] || '').trim().toUpperCase(); // 'A', 'B', or 'BOTH'/Blank
+    const eventName = String(row[3] || '').trim();
+    const filterOn = !!row[4];
+    const paramKey = String(row[5] || '').trim();
+    const paramVal = String(row[6] || '').trim();
+
+    if (!eventName) continue; // Skip empty steps
+
+    // Determine which variants this step applies to
+    const variantsToApply = (variantRaw === '' || variantRaw === 'BOTH') ? ['A', 'B'] : [variantRaw];
+
+    // Regex Validation for Funnel Parameters
+    if (filterOn && paramVal && !ISVALIDREGEX(paramVal)) {
+      SpreadsheetApp.getUi().alert("🚨 Export Stopped!", "Syntax error in RegEx.\n\nSheet: " + funnelSheetName + "\nRow: " + (i + 5) + "\nBroken RegEx: " + paramVal + "\n\nPlease fix this before exporting.", SpreadsheetApp.getUi().ButtonSet.OK);
+      throw new Error("Invalid Regex in Funnels sheet.");
+    }
+
+    if (!grouped[id]) grouped[id] = {};
+
+    variantsToApply.forEach(v => {
+      if (!grouped[id][v]) grouped[id][v] = [];
+      grouped[id][v].push({ stepNum, eventName, filterOn, paramKey, paramVal });
+    });
+  }
+
+  // 2. Build JSON strings mapped by [ID][Variant]
+  for (const id in grouped) {
+    map[id] = {};
+    for (const v in grouped[id]) {
+      
+      // Sort by step number to ensure the array is strictly in order
+      grouped[id][v].sort((a, b) => a.stepNum - b.stepNum);
+
+      const stepsArray = grouped[id][v].map(s => {
+        // ADDED step_number HERE:
+        const obj = { 
+          step_number: s.stepNum,
+          event: s.eventName 
+        };
+        
+        if (s.filterOn && s.paramKey && s.paramVal) {
+          obj.param_key = s.paramKey;
+          obj.param_val = s.paramVal;
+        }
+        return obj;
+      });
+
+      map[id][v] = JSON.stringify(stepsArray);
+    }
+  }
+  
+  return map;
 }
