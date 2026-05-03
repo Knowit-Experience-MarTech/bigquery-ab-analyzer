@@ -650,75 +650,78 @@ function flatten2RowBlocks(sheet) {
 /*********************************************************
  * EXPORT FILTERS (simple + advanced) VIA CSV LOAD
  *********************************************************/
+/*********************************************************
+ * EXPORT FILTERS VIA CSV LOAD
+ *********************************************************/
+/*********************************************************
+ * EXPORT FILTERS VIA CSV LOAD
+ *********************************************************/
 function exportExperimentFiltersToBigQueryCSVLoad() {
-  var ss = SpreadsheetApp.getActiveSpreadsheet();
-  var expSheet = ss.getSheetByName(experimentSheetName);
-  var filterSheet = ss.getSheetByName(filtersSheetName);
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const expSheet = ss.getSheetByName(experimentSheetName);
+  const filterSheet = ss.getSheetByName(filtersSheetName);
 
-  // 1) Read BigQuery settings from named ranges
-  var projectId = ss.getRangeByName("SettingsBigQueryProjectID").getValue();
-  var datasetId = ss.getRangeByName("SettingsBigQueryExperimentsDataSetID").getValue();
-  var datasetLoc = ss.getRangeByName("SettingsBigQueryDataSetLocation").getValue();
-  var filtersTable = ss.getRangeByName("SettingsBigQueryExperimentFiltersTable").getValue();
+  const projectId = ss.getRangeByName("SettingsBigQueryProjectID").getValue();
+  const datasetId = ss.getRangeByName("SettingsBigQueryExperimentsDataSetID").getValue();
+  const datasetLoc = ss.getRangeByName("SettingsBigQueryDataSetLocation").getValue();
+  const filtersTable = ss.getRangeByName("SettingsBigQueryExperimentFiltersTable").getValue();
 
-  // 2) Ensure the dataset exists (create if missing)
   ensureDatasetWithLocation(projectId, datasetId, datasetLoc);
 
-  // ✅ Collect all Analyze=Yes experiment IDs (even if no filters)
-  var idsToSync = collectAnalyzeYesExperimentIds(expSheet);
+  // 1. Collect all Analyze=Yes experiment IDs
+  const idsToSync = collectAnalyzeYesExperimentIds(expSheet);
   if (!idsToSync.length) {
     return "Filters sync skipped (no experiments marked Yes).";
   }
 
-  // Build staging rows (actual filter rows)
-  var flat = flattenExperimentFilters(expSheet, filterSheet); // may be empty if filters removed
+  // 2. Build staging rows by reading ONLY the Filters sheet database
+  const flat = flattenExperimentFilters(filterSheet, idsToSync); 
 
-  // HALT IF REGEX IS BROKEN
   if (flat && flat.error) return "🚨 Filters sync aborted due to RegEx error.";
 
-  var rows = flat.valid;
-  if (flat.skipped.length) SpreadsheetApp.getUi().alert("Some Filters were skipped:\n\n" + flat.skipped.join("\n"));
+  const rows = flat.valid;
+  if (flat.skipped && flat.skipped.length) {
+    SpreadsheetApp.getUi().alert("Some Filters were skipped:\n\n" + flat.skipped.join("\n"));
+  }
 
   // --- Stage 1: load ids stage (always) ---
-  var idsStage = filtersTable + "_ids_stage";
-  var idsCsv = idsToSync.map(function(id) { return toCsvCell(id); }).join("\n");
-  var idsBlob = Utilities.newBlob(idsCsv, "application/octet-stream", "filters_ids_stage.csv");
+  const idsStage = filtersTable + "_ids_stage";
+  const idsCsv = idsToSync.map(id => toCsvCell(id)).join("\n");
+  const idsBlob = Utilities.newBlob(idsCsv, "application/octet-stream", "filters_ids_stage.csv");
 
-  var idsLoadJob = {
+  const idsLoadJob = {
     configuration: { load: {
-      destinationTable: { projectId: projectId, datasetId: datasetId, tableId: idsStage },
+      destinationTable: { projectId, datasetId, tableId: idsStage },
       writeDisposition: "WRITE_TRUNCATE",
       createDisposition: "CREATE_IF_NEEDED",
       schema: { fields: [{ name: "id", type: "STRING" }] }
     }}
   };
 
-  var idsLoadRes = BigQuery.Jobs.insert(idsLoadJob, projectId, idsBlob);
+  const idsLoadRes = BigQuery.Jobs.insert(idsLoadJob, projectId, idsBlob);
   waitForJobDone(projectId, idsLoadRes.jobReference.jobId, 'load experiments_filters_ids_stage');
   setTableTimeToLive(projectId, datasetId, idsStage, timeToLiveDays);
 
-  var t = "`" + projectId + "." + datasetId + "." + filtersTable + "`";
-  var sIds = "`" + projectId + "." + datasetId + "." + idsStage + "`";
+  const t = `\`${projectId}.${datasetId}.${filtersTable}\``;
+  const sIds = `\`${projectId}.${datasetId}.${idsStage}\``;
 
-  // ✅ Always delete filters for all Analyze=Yes experiments
-  runQuery(projectId,
-    "DELETE FROM " + t + " WHERE id IN (SELECT DISTINCT id FROM " + sIds + ")",
-    "DELETE filters for Analyze=Yes ids"
-  );
+  // Always delete filters for all Analyze=Yes experiments to prevent duplicates
+  runQuery(projectId, `DELETE FROM ${t} WHERE id IN (SELECT DISTINCT id FROM ${sIds})`, "DELETE filters for Analyze=Yes ids");
 
   // --- Stage 2: if there are filters, load filters_stage and insert ---
   if (!rows.length) {
-    return "Filters sync complete (cleared filters for " + idsToSync.length + " experiments; inserted 0 rows).";
+    return `Filters sync complete (cleared filters for ${idsToSync.length} experiments; inserted 0 rows).`;
   }
 
-  var cols = ["id","variant","enabled","filter_type","filter_on_value","filter_scope","filter_field","filter_value","notes","source"];
-  var csv = rows.map(function(r) { return cols.map(function(c) { return toCsvCell(r[c]); }).join(","); }).join("\n");
-  var blob = Utilities.newBlob(csv, "application/octet-stream", "filters_stage.csv");
-  var stage = filtersTable + "_stage";
+  // Removed "notes" and "source" from columns
+  const cols = ["id","variant","enabled","filter_type","filter_on_value","filter_scope","filter_field","filter_value"];
+  const csv = rows.map(r => cols.map(c => toCsvCell(r[c])).join(",")).join("\n");
+  const blob = Utilities.newBlob(csv, "application/octet-stream", "filters_stage.csv");
+  const stage = filtersTable + "_stage";
 
-  var loadJob = {
+  const loadJob = {
     configuration: { load: {
-      destinationTable: { projectId: projectId, datasetId: datasetId, tableId: stage },
+      destinationTable: { projectId, datasetId, tableId: stage },
       writeDisposition: "WRITE_TRUNCATE",
       createDisposition: "CREATE_IF_NEEDED",
       schema: { fields: [
@@ -729,146 +732,78 @@ function exportExperimentFiltersToBigQueryCSVLoad() {
         { name: "filter_on_value", type: "STRING" },
         { name: "filter_scope", type: "STRING" },
         { name: "filter_field", type: "STRING" },
-        { name: "filter_value", type: "STRING" },
-        { name: "notes", type: "STRING" },
-        { name: "source", type: "STRING" }
+        { name: "filter_value", type: "STRING" }
       ]}
     }}
   };
 
-  var loadRes = BigQuery.Jobs.insert(loadJob, projectId, blob);
+  const loadRes = BigQuery.Jobs.insert(loadJob, projectId, blob);
   waitForJobDone(projectId, loadRes.jobReference.jobId, 'load experiments_filters_stage');
   setTableTimeToLive(projectId, datasetId, stage, timeToLiveDays);
 
-  var s = "`" + projectId + "." + datasetId + "." + stage + "`";
+  const s = `\`${projectId}.${datasetId}.${stage}\``;
 
+  // Removed "notes" and "source" from SQL
   runQuery(projectId,
-    "INSERT INTO " + t + " (id,variant,enabled,filter_type,filter_on_value,filter_scope,filter_field,filter_value,notes,source) " +
-    "SELECT id,variant,enabled,filter_type,filter_on_value,filter_scope,filter_field,filter_value,notes,source FROM " + s,
+    `INSERT INTO ${t} (id,variant,enabled,filter_type,filter_on_value,filter_scope,filter_field,filter_value) ` +
+    `SELECT id,variant,enabled,filter_type,filter_on_value,filter_scope,filter_field,filter_value FROM ${s}`,
     "INSERT filters"
   );
 
-  return "Filters sync complete (cleared filters for " + idsToSync.length + " experiments; inserted " + rows.length + " rows).";
+  return `Filters sync complete (cleared filters for ${idsToSync.length} experiments; inserted ${rows.length} rows).`;
 }
 
-/** Merge simple+advanced. Only for experiments with Analyze=Yes. */
-function flattenExperimentFilters(expSheet, filterSheet) {
+/** Flatten filters from the centralized Filters DB. Duplicates 'Both' variants to A & B. */
+function flattenExperimentFilters(filterSheet, idsToSync) {
   const results = { valid: [], skipped: [] };
+  if (!filterSheet || !idsToSync || !idsToSync.length) return results;
 
-  // Build index of enabled advanced rows by Experiment_ID and variant
-  const advIndex = {};
-  if (filterSheet) {
-    const lastData = (typeof filtersGetLastDataRow === 'function') ? filtersGetLastDataRow(filterSheet) : filterSheet.getLastRow();
-    if (lastData >= filtersDataStartRow) {
-      const numRows = lastData - filtersDataStartRow + 1;
-      const vals = filterSheet.getRange(filtersDataStartRow, 1, numRows, filtersNumColumns).getValues();
-      for (let i = 0; i < vals.length; i++) {
-        const expId = normalizeExperimentId(vals[i][0]);
-        const variant = String(vals[i][1] || '').trim().toUpperCase();
-        const enabled = !!vals[i][2];
-        const ftype = String(vals[i][3] || '').trim();
-        const onLbl = filtersNormOnToLong(vals[i][4] || 'Both');
-        const scope = String(vals[i][5] || '').trim();
-        const field = String(vals[i][6] || '').trim();
-        const value = String(vals[i][7] || '').trim();
-        
-        // ==========================================================
-        // 🚨 NEW REGEX VALIDATION BLOCK (Advanced filters)
-        // ==========================================================
-        if (!ISVALIDREGEX(value)) {
-           SpreadsheetApp.getUi().alert("🚨 Export Stopped!", "Syntax error in RegEx.\n\nSheet: " + filtersSheetName + "\nRow: " + (filtersDataStartRow + i) + "\nBroken RegEx: " + value + "\n\nPlease fix this before exporting.", SpreadsheetApp.getUi().ButtonSet.OK);
-           return { error: true };
-        }
-        // ==========================================================
+  // Convert allowed IDs into a Set for fast lookup
+  const idSet = new Set(idsToSync.map(id => String(id).trim()));
 
-        const notes = String(vals[i][8] || '').trim();
-        if (!expId || (variant !== 'A' && variant !== 'B') || !enabled) continue;
-        if (!advIndex[expId]) advIndex[expId] = { A: [], B: [] };
-        advIndex[expId][variant].push({
-          id: expId, variant, enabled: true,
-          filter_type: ftype || 'Include',
-          filter_on_value: onLbl,
-          filter_scope: scope || 'Event',
-          filter_field: field, filter_value: value,
-          notes, source: 'advanced'
-        });
-      }
-    }
-  }
+  const lastRow = filterSheet.getLastRow();
+  if (lastRow < 2) return results;
 
-  // Walk Experiments blocks
-  const lastRow = expSheet.getLastRow();
-  for (let r = firstRow; r <= lastRow; r += 2) {
-    const r2 = r + 1; if (r2 > lastRow) break;
+  // Read the 7-column database: 0:ID, 1:Variant, 2:Type, 3:On, 4:Scope, 5:Field, 6:Value
+  const data = filterSheet.getRange(2, 1, lastRow - 1, 7).getValues();
 
-    const analyzeVal = String(expSheet.getRange(r, analyzeTestColumn).getValue() || '').trim();
-    if (analyzeVal !== 'Yes') continue; // Filters only for Yes
+  for (let i = 0; i < data.length; i++) {
+    const row = data[i];
+    const rawId = String(row[0] || '').trim();
+    const expId = normalizeExperimentId(rawId);
 
-    const idStr = normalizeExperimentId(expSheet.getRange(r, idColumn).getValue());
-    const nameStr = String(expSheet.getRange(r, experimentNameColumn).getValue() || '').trim();
-    if (!idStr && !nameStr) { results.skipped.push(`Rows ${r}-${r2}: missing Experiment ID/Name.`); continue; }
-    const key = idStr || nameStr;
+    // Skip if this experiment is not marked Analyze = Yes
+    if (!expId || !idSet.has(expId)) continue;
 
-    const filterYes = String(expSheet.getRange(r, filterColumn).getValue() || '').toLowerCase() === 'yes';
-    const advOn = !!expSheet.getRange(r, filterAdvancedColumn).getValue();
-    const setting = String(expSheet.getRange(r, variantSettingsColumn).getValue() || 'Same');
-    const different = (setting === 'Different');
+    const variantRaw = String(row[1] || '').trim().toUpperCase();
+    const ftype = String(row[2] || '').trim() || 'Include';
+    const onLbl = filtersNormOnToLong(row[3] || 'Both');
+    const scope = String(row[4] || '').trim() || 'Event';
+    const field = String(row[5] || '').trim();
+    const value = String(row[6] || '').trim();
 
-    if (!filterYes) continue;
-
-    if (advOn) {
-      // Advanced: emit enabled rows for this experiment id (by id or name)
-      const pushAll = (bag) => { (bag?.A || []).forEach(x => results.valid.push(x)); (bag?.B || []).forEach(x => results.valid.push(x)); };
-      pushAll(advIndex[idStr]);
-      pushAll(advIndex[nameStr]);
-      continue;
-    }
-
-    // Simple: one row per variant if meaningful (field OR value present)
-    const ftypeA = String(expSheet.getRange(r, filterTypeColumn).getValue() || 'Include');
-    const onA = filtersNormOnToLong(expSheet.getRange(r, filterOnValueColumn).getValue() || 'Both');
-    const scopeA = String(expSheet.getRange(r, filterScopeColumn).getValue() || 'Event');
-    const fieldA = String(expSheet.getRange(r, filterFieldColumn).getValue() || '').trim();
-    const valueA = String(expSheet.getRange(r, filterValueColumn).getValue() || '').trim();
-    
-    // ==========================================================
-    // REGEX VALIDATION BLOCK (Simple filters - Variant A)
-    // ==========================================================
-    if (!ISVALIDREGEX(valueA)) {
-       SpreadsheetApp.getUi().alert("🚨 Export Stopped!", "Syntax error in RegEx.\n\nSheet: " + experimentSheetName + " (Simple Filter)\nRow: " + r + "\nBroken RegEx: " + valueA + "\n\nPlease fix this before exporting.", SpreadsheetApp.getUi().ButtonSet.OK);
+    // RegEx Validation
+    if (!ISVALIDREGEX(value)) {
+       SpreadsheetApp.getUi().alert("🚨 Export Stopped!", "Syntax error in RegEx.\n\nSheet: " + filtersSheetName + "\nRow: " + (i + 2) + "\nBroken RegEx: " + value + "\n\nPlease fix this before exporting.", SpreadsheetApp.getUi().ButtonSet.OK);
        return { error: true };
     }
-    // ==========================================================
 
-    let ftypeB = ftypeA, onB = onA, scopeB = scopeA, fieldB = fieldA, valueB = valueA;
-    if (different) {
-      ftypeB = String(expSheet.getRange(r2, filterTypeColumn).getValue() || ftypeA);
-      onB = filtersNormOnToLong(expSheet.getRange(r2, filterOnValueColumn).getValue() || onA);
-      scopeB = String(expSheet.getRange(r2, filterScopeColumn).getValue() || scopeA);
-      const fB = String(expSheet.getRange(r2, filterFieldColumn).getValue() || '').trim();
-      const vB = String(expSheet.getRange(r2, filterValueColumn).getValue() || '').trim();
-      
-      // ==========================================================
-      // REGEX VALIDATION BLOCK (Simple filters - Variant B)
-      // ==========================================================
-      if (!ISVALIDREGEX(vB)) {
-         SpreadsheetApp.getUi().alert("🚨 Export Stopped!", "Syntax error in RegEx.\n\nSheet: " + experimentSheetName + " (Simple Filter)\nRow: " + r2 + "\nBroken RegEx: " + vB + "\n\nPlease fix this before exporting.", SpreadsheetApp.getUi().ButtonSet.OK);
-         return { error: true };
-      }
-      // ==========================================================
+    if (!field && !value) continue;
 
-      if (fB) fieldB = fB; if (vB) valueB = vB;
-    }
+    // Handle Variant = Both mapping
+    const variantsToApply = (variantRaw === '' || variantRaw === 'BOTH') ? ['A', 'B'] : [variantRaw];
 
-    if (fieldA || valueA) results.valid.push({
-      id: key, variant: 'A', enabled: true, filter_type: ftypeA, filter_on_value: onA,
-      filter_scope: scopeA, filter_field: fieldA, filter_value: valueA,
-      notes: 'from Experiments (simple)', source: 'simple'
-    });
-    if (fieldB || valueB) results.valid.push({
-      id: key, variant: 'B', enabled: true, filter_type: ftypeB, filter_on_value: onB,
-      filter_scope: scopeB, filter_field: fieldB, filter_value: valueB,
-      notes: 'from Experiments (simple)', source: 'simple'
+    variantsToApply.forEach(v => {
+      results.valid.push({
+        id: expId,
+        variant: v,
+        enabled: true,         // Hardcoded since we deleted this column
+        filter_type: ftype,
+        filter_on_value: onLbl,
+        filter_scope: scope,
+        filter_field: field,
+        filter_value: value
+      });
     });
   }
 
@@ -1304,17 +1239,18 @@ function filtersDeleteRowsForExperiment(expIdentifiers) {
     .filter(Boolean);
   if (!ids.length) return 0;
 
-  const lastData = filtersGetLastDataRow(sh); // your safe detector
-  if (lastData < filtersDataStartRow) return 0;
+  const lastRow = sh.getLastRow();
+  if (lastRow < 2) return 0;
 
-  const numRows = lastData - filtersDataStartRow + 1;
-  const vals = sh.getRange(filtersDataStartRow, 1, numRows, filtersNumColumns).getValues();
+  // We only need to read Column A (Experiment ID) to find matches
+  const vals = sh.getRange(2, 1, lastRow - 1, 1).getValues();
 
   let deleted = 0;
+  // Loop backwards to safely delete rows without messing up the index
   for (let i = vals.length - 1; i >= 0; i--) {
-    const rowExpId = String(vals[i][0] || '').trim(); // col 1 = Experiment_ID
+    const rowExpId = String(vals[i][0] || '').trim();
     if (ids.indexOf(rowExpId) !== -1) {
-      sh.deleteRow(filtersDataStartRow + i);
+      sh.deleteRow(2 + i);
       deleted++;
     }
   }

@@ -30,7 +30,7 @@ The solution is built around **Google Sheet**, **BigQuery**, **Vertex AI** and *
 3. [Data Studio / presenting results](01-Documentation/Data-Studio)
 
 ## 3. Upgrading
-* [2.1 is latest version](../../releases/tag/v2.1).
+* [2.2 is latest version](../../releases/tag/v2.2).
 
 ## 4. The "Backbone": Configuration-Driven Architecture
 
@@ -53,7 +53,7 @@ The Filters feature allows you to move beyond monolithic data by isolating speci
 * **Flexible Logic**: Supports both Event and User scopes, utilizing Regex for sophisticated matching (e.g., "Exclude customer type A" or "Include only specific sub-domains").
 * **No Re-Coding Necessary**: Stakeholders can pivot from a site-wide analysis to a product-specific deep dive instantly, simply by updating a row in the configuration.
 
-<img src="02-Images/bigqery-ab-analyzer-google-sheet-advanced-filters.png" alt="BigQuery A/B Analyzer - Google Sheet Advanced Filters Tab" />
+<img src="02-Images/bigqery-ab-analyzer-google-sheet-filters.png" alt="BigQuery A/B Analyzer - Google Sheet Filters Modal" />
 
 ### User Overlap: The "Quality Control" Referee
 

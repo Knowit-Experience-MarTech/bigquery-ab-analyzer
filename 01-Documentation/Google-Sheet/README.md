@@ -7,7 +7,7 @@ If you haven't done so already, do the following Google Sheet setup:
 1. Create a folder in **Google Drive** for the **BigQuery A/B Analyzer** solution.
 	1. Within that folder, create a **Images** folder.
 		1. Change **sharing** on the **Images** folder to **Anyone on the Internet with the link can view**.
-2. Copy the [**Google Sheet**](https://docs.google.com/spreadsheets/d/1AXOdyBnTem0ZVyaL0iPmcoeWXBh5lf-NO80CqtsdSE0/edit?usp=sharing) into the **BigQuery A/B Analyzer** folder.
+2. Copy the [**Google Sheet**](https://docs.google.com/spreadsheets/d/1UC2CyflDU20liWG4QWxXLJWaBPh5A3GPgbSNDt-EKN0/edit?usp=sharing) into the **BigQuery A/B Analyzer** folder.
 	1. Go to the [**Settings** sheet](Settings-Sheet). Follow the setup there.
 
 Almost everything is powered by **[Apps Script](Apps-Script)**.
@@ -157,9 +157,6 @@ Almost everything is powered by **[Apps Script](Apps-Script)**.
       <td>For deleting or copying experiments. Tick the checkbox for the experiment you want to delete/copy.</td>
     </tr>
     <tr>
-      <th colspan="4" scope="colgroup">Advanced Settings</th>
-    </tr>
-    <tr>
       <th scope="row" style="text-align: left;" rowspan="2">Scope</th>
       <td rowspan="2">Dropdown</td>
       <td>User</td>
@@ -180,56 +177,14 @@ Almost everything is powered by **[Apps Script](Apps-Script)**.
       <th scope="row" style="text-align: left;" rowspan="2">Variant Settings</th>
       <td rowspan="2">Dropdown</td>
       <td>Same</td>
-      <td rowspan="2">Should settings be the same for both variants? If <strong>Different</strong> is chosen, the following can differ per variant: conversion event, experiment event name, experiment variant parameter, and filters.</td>
+      <td rowspan="2">Should settings be the same for both variants? If <strong>Different</strong> is chosen, the following can differ per variant: conversion event, experiment event name and experiment variant parameter.</td>
     </tr>
     <tr><td>Different</td></tr>
     <tr>
-      <th scope="row" style="text-align: left;" rowspan="2">Filter Experiment</th>
-      <td rowspan="2">Dropdown</td>
-      <td>Yes</td>
-      <td rowspan="2">If <strong>Yes</strong> is chosen, simple filtering (on a single criterion) becomes available.</td>
-    </tr>
-    <tr><td>No</td></tr>
-    <tr>
-      <th scope="row" style="text-align: left;">Advanced Filter</th>
+      <th scope="row" style="text-align: left;">Filter Experiment</th>
       <td>Checkbox</td>
       <td>✔</td>
-      <td>Turn on Advanced to combine multiple include/exclude filters. Advanced filtering is done in the <strong>Filters</strong> sheet.</td>
-    </tr>
-    <tr>
-      <th scope="row" style="text-align: left;" rowspan="2">Filter Type</th>
-      <td rowspan="2">Dropdown</td>
-      <td>Include</td>
-      <td rowspan="2">Include or exclude filter.</td>
-    </tr>
-    <tr><td>Exclude</td></tr>
-    <tr>
-      <th scope="row" style="text-align: left;" rowspan="3">Filter On Value</th>
-      <td rowspan="3">Dropdown</td>
-      <td>Both</td>
-      <td rowspan="3">Filter on experiment (event), conversion event, or both. Mandatory if <strong>Filter Experiment</strong> is set to <strong>Yes</strong>.</td>
-    </tr>
-    <tr><td>Experiment</td></tr>
-    <tr><td>Conversion</td></tr>
-    <tr>
-      <th scope="row" style="text-align: left;" rowspan="3">Filter Scope</th>
-      <td rowspan="3">Dropdown</td>
-      <td>Event</td>
-      <td rowspan="3">Filter on <em>event</em>, <em>user property</em> scope (<code>event_params</code> or <code>user_properties</code>), or a BigQuery column (field name), e.g., <code>device.category</code>. Mandatory if <strong>Filter Experiment</strong> is set to <strong>Yes</strong>.</td>
-    </tr>
-    <tr><td>User</td></tr>
-    <tr><td>Column</td></tr>
-    <tr>
-      <th scope="row" style="text-align: left;">Filter Field</th>
-      <td>Text</td>
-      <td><code>ga_session_number</code></td>
-      <td>Parameter or column name from BigQuery (e.g., <code>ga_session_number</code>, <code>device.category</code>). Mandatory if <strong>Filter Experiment</strong> is set to <strong>Yes</strong>.</td>
-    </tr>
-    <tr>
-      <th scope="row" style="text-align: left;">Filter Value</th>
-      <td>Text</td>
-      <td>^desktop$</td>
-      <td>Parameter value (regex via <code>REGEXP_CONTAINS</code>). Mandatory if <strong>Filter Experiment</strong> is set to <strong>Yes</strong>.</td>
+      <td>If ticked, a modale will "pop up" where you do the filter settings. If the checkbox is ticked, it means that this experiment is filtered. Filter settings are saved to a hidden **Filters sheet**.</td>
     </tr>
     <tr>
       <th scope="row" style="text-align: left;">Experiment Event Name</th>
@@ -241,15 +196,11 @@ Almost everything is powered by **[Apps Script](Apps-Script)**.
 </table>
 
 
-### Filters Sheet
+#### Filtering
 
 Filters allow you to zoom in on specific segments (e.g., "Mobile Users Only").
 
-* **Simple Filter (In-Row)**: Set Filter (Column R) to "Yes". Use columns T-X to define one rule (e.g., Include -> device.category -> mobile).
-* **Advanced Filter (Separate Tab)**: Check the box in Column S (Adv. Filter). This opens the Filters sheet where you can stack multiple rules (AND logic) for complex segments.
-	* If you have ticked the **Advanced Filter** for a experiment, filters for that experiment has to be edited in the **Filters** sheet.
-	* If you add several filters to a experiment, they are queried as **AND**. Ex. Include parameter name with value AND Exclude parameter name with value.
-	* To add a filter to a experiment, select a row for that experiment, and click on the button that fits your need (Add Include, Add Include (both Variants), Duplicate selected filter, (Add Exclude, Add Exclude (both Variants).
+* A modale will "pop up" if you tick the **Filter Experiment** checkbox. If the checkbox is ticked, it means that this experiment is filtered. Filter settings are saved to a hidden **Filters sheet**.
 
 <table>
   <caption>Filter Configuration</caption>
@@ -263,24 +214,13 @@ Filters allow you to zoom in on specific segments (e.g., "Mobile Users Only").
   </thead>
   <tbody>
     <tr>
-      <th scope="row" style="text-align: left;">ID</th>
-      <td>Number</td>
-      <td>1</td>
-      <td><strong>ID</strong> of the experiment. Automatically inserted.</td>
+      <th scope="row" style="text-align: left;" rowspan="3">Variant</th>
+      <td rowspan="3">Dropdown</td>
+      <td>Both</td>
+      <td rowspan="3">Select if filtering should be used on <code>Both</code>, <code>A</code> or <code>B</code>.</td>
     </tr>
-    <tr>
-      <th scope="row" style="text-align: left;" rowspan="2">Variant</th>
-      <td rowspan="2">Dropdown</td>
-      <td>A</td>
-      <td rowspan="2">Variant in the experiment. Automatically inserted.</td>
-    </tr>
-    <tr><td>B</td></tr>
-    <tr>
-      <th scope="row" style="text-align: left;">Enabled</th>
-      <td>Checkbox</td>
-      <td>✔</td>
-      <td><strong>TRUE</strong>: Filter is enabled for analysis. <strong>FALSE</strong>: Filter will not be used in analysis.</td>
-    </tr>
+    <tr><td>A</td></tr>
+	<tr><td>B</td></tr>
     <tr>
       <th scope="row" style="text-align: left;" rowspan="2">Filter Type</th>
       <td rowspan="2">Dropdown</td>
@@ -289,7 +229,7 @@ Filters allow you to zoom in on specific segments (e.g., "Mobile Users Only").
     </tr>
     <tr><td>Exclude</td></tr>
     <tr>
-      <th scope="row" style="text-align: left;" rowspan="3">Filter On Value</th>
+      <th scope="row" style="text-align: left;" rowspan="3">Apply To</th>
       <td rowspan="3">Dropdown</td>
       <td>Both</td>
       <td rowspan="3">Filter on the experiment event, conversion event, or both.</td>
@@ -311,30 +251,27 @@ Filters allow you to zoom in on specific segments (e.g., "Mobile Users Only").
       <td>Parameter or column name from BigQuery, e.g. <code>ga_session_number</code> or <code>device.category</code>.</td>
     </tr>
     <tr>
-      <th scope="row" style="text-align: left;">Filter Value</th>
+      <th scope="row" style="text-align: left;">Filter Value (RegEx Contains)</th>
       <td>Text</td>
       <td><code>^desktop$</code></td>
       <td>Parameter value matching uses regex (<code>REGEXP_CONTAINS</code>).</td>
     </tr>
-    <tr>
-      <th scope="row" style="text-align: left;">Notes</th>
-      <td>Text</td>
-      <td>Added via button</td>
-      <td>Notes about the filter. Notes are automatically generated but can be overwritten.</td>
-    </tr>
   </tbody>
 </table>
 
-### Funnels Sheet
+<img src="../../02-Images/bigqery-ab-analyzer-google-sheet-filters.png" alt="BigQuery A/B Analyzer - Google Sheet Filters Modal" />
+
+#### Funnels
 
 To create a **Funnel** for your experiment, do the following:
 
-1. Tick the **Funnel Checkbox** (Column AC) in the **Experiments Sheet**.
-2. Go to the **Funnels Sheet**.
+1. Tick the **Funnel**  Checkbox (Column AC) in the **Experiments Sheet**.
+2. A modale will "pop up".
 	1. **Step 1** has been created for the selected experiment. Make the adjustments for this step according to the table below.
-	2. To add a new step, make sure the step you want to make a step after is selected (some cell in this step is selected).
-		1. Click **Add Funnel Step** button.
+	2. To add a new step, click **Add Funnel Step** button.
 	3. Repeat until you have created all your steps.
+
+Funnel settings are saved to a hidden **Funnel sheet**.
 
 <table>
   <caption>Funnel Configuration</caption>
@@ -348,13 +285,7 @@ To create a **Funnel** for your experiment, do the following:
   </thead>
   <tbody>
     <tr>
-      <th scope="row" style="text-align: left;">ID</th>
-      <td>Number</td>
-      <td>1</td>
-      <td><strong>ID</strong> of the experiment. Automatically inserted.</td>
-    </tr>
-    <tr>
-      <th scope="row" style="text-align: left;">Funnel Step</th>
+      <th scope="row" style="text-align: left;">Step</th>
       <td>Number</td>
       <td><code>2</code></td>
       <td>Funnel Step Number</td>
@@ -374,7 +305,7 @@ To create a **Funnel** for your experiment, do the following:
       <td>Select <strong>Event Name</strong> for the step.</td>
     </tr>
     <tr>
-      <th scope="row" style="text-align: left;">Filter</th>
+      <th scope="row" style="text-align: left;">Apply Event Filter</th>
       <td>Checkbox</td>
       <td>✔</td>
       <td>Tick this checkbox if you need to filter the step.</td>
@@ -386,13 +317,15 @@ To create a **Funnel** for your experiment, do the following:
       <td>Event Parameter that you needs to filter.</td>
     </tr>
     <tr>
-      <th scope="row" style="text-align: left;">Filter Value</th>
+      <th scope="row" style="text-align: left;">Filter Value (RegEx Contains)</th>
       <td>Text</td>
       <td><code>\/my-awesome-page$</code></td>
       <td>Parameter value matching uses regex (<code>REGEXP_CONTAINS</code>).</td>
     </tr>
   </tbody>
 </table>
+
+<img src="../../02-Images/bigqery-ab-analyzer-google-sheet-funnels.png" alt="BigQuery A/B Analyzer - Google Sheet Funnel Modal" />
 
 ### Settings Sheet
 

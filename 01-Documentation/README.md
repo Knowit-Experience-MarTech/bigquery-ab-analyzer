@@ -33,7 +33,7 @@ Wait for the "toast" notification at the bottom right confirming success.
 Wait for the "toast" notification at the bottom right confirming success.
 
 ### Step B: Configure the Test
-Fill out a row in the Experiments tab (see [**Experiments sheet**](Google-Sheet/README.md#experiments-sheet) and [**Filters sheet**](Google-Sheet/README.md#filters-sheet) for details).
+Fill out a row in the Experiments tab (see [**Experiments sheet**](Google-Sheet/README.md#experiments-sheet) and configure [**Filters**](Google-Sheet/README.md#filtering) for details).
 
 ### Step C: Run Analysis
 

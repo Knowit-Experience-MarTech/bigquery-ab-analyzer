@@ -3,7 +3,7 @@
 1. Create a folder in **Google Drive** for the **BigQuery A/B Analyzer** solution.
 	1. Within that folder, create a **Images** folder.
 		1. Change **sharing** on the **Images** folder to **Anyone on the Internet with the link can view**.
-2. Copy the [**Google Sheet**](https://docs.google.com/spreadsheets/d/1AXOdyBnTem0ZVyaL0iPmcoeWXBh5lf-NO80CqtsdSE0/edit?usp=sharing) into the **BigQuery A/B Analyzer** folder.
+2. Copy the [**Google Sheet**](https://docs.google.com/spreadsheets/d/1UC2CyflDU20liWG4QWxXLJWaBPh5A3GPgbSNDt-EKN0/edit?usp=sharing) into the **BigQuery A/B Analyzer** folder.
 	1. Go to the **Settings** sheet. Edit the following fields:
 		1. **Experiment Settings**
 			1. **Data Set Location**: As default it is set to **EU**. Change it to **US** if that is correct for you.

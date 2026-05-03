@@ -77,9 +77,7 @@ create table if not exists `your_project.bigquery_ab_analyzer.experiments_filter
   filter_on_value string options(description='Filter on Experiment Event, Conversion Event or Both.'),
   filter_scope string options(description='Filter on Event, User Property Scope (event_params or user_properties) OR BigQuery Column (Field Name), ex. "device. category".'),
   filter_field string options(description='parameter_name from BigQuery. Ex. ga_session_number'),
-  filter_value string options(description='Parameter Value matching uses RegEx (REGEXP_CONTAINS)'),
-  notes string options(description='Notes about the filter.'),
-  source string options(description='Filter is sourced from simple or advanced filtering.')
+  filter_value string options(description='Parameter Value matching uses RegEx (REGEXP_CONTAINS)')
 )
 cluster by id;
 		
@@ -192,6 +190,10 @@ add column if not exists analyze_funnel bool
 alter table `your_project.bigquery_ab_analyzer.experiments`
 drop column if exists query_information_logging,
 drop column if exists query_price_per_tib;
+
+alter table `your_project.bigquery_ab_analyzer.experiments_filters`
+drop column if exists notes,
+drop column if exists source;
   
 /*** CREATE USER DEFINED FUNCTIONS (UDF) ***/
 /*** function 01: z_score_proportion ***/

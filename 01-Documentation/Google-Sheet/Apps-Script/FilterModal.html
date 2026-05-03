@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <base target="_top">
+  <style>
+    body { font-family: 'Arial', sans-serif; padding: 15px; color: #333; background-color: #f8f9fa; }
+    h3 { margin-top: 0; font-size: 16px; color: #1a73e8; border-bottom: 2px solid #e8eaed; padding-bottom: 10px;}
+    
+    .filter-card { background: #fff; border: 1px solid #dadce0; border-radius: 8px; padding: 12px; margin-bottom: 15px; box-shadow: 0 1px 2px rgba(0,0,0,0.05); }
+    .filter-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; font-weight: bold; color: #5f6368;}
+    
+    .input-group { margin-bottom: 8px; flex: 1;}
+    .flex-row { display: flex; gap: 12px; margin-bottom: 8px; }
+    
+    label { display: block; font-size: 12px; font-weight: bold; margin-bottom: 4px; color: #5f6368; }
+    input[type="text"], select { width: 100%; box-sizing: border-box; padding: 6px 8px; border: 1px solid #dadce0; border-radius: 4px; font-size: 13px; }
+    
+    button { cursor: pointer; border: none; border-radius: 4px; font-weight: bold; font-size: 13px; }
+    .btn-remove { background: transparent; color: #d93025; padding: 4px; }
+    .btn-remove:hover { background: #fce8e6; }
+    .btn-add { background: #f1f3f4; color: #1a73e8; width: 100%; padding: 10px; margin-bottom: 20px; border: 1px dashed #1a73e8; }
+    .btn-add:hover { background: #e8f0fe; }
+    .btn-save { background: #1a73e8; color: #fff; width: 100%; padding: 12px; box-shadow: 0 1px 2px rgba(0,0,0,0.1); }
+    .btn-save:hover { background: #1557b0; }
+    .btn-save:disabled { background: #8ab4f8; cursor: not-allowed; }
+  </style>
+</head>
+<body>
+
+  <h3>Experiment: <?= experimentId ?></h3>
+  
+  <div id="editor">
+    <div id="filters-container"></div>
+    <button class="btn-add" onclick="addFilter()">+ Add Filter</button>
+    <button class="btn-save" id="save-btn" onclick="saveData()">Save Filters</button>
+  </div>
+
+  <script>
+    const expId = <?!= JSON.stringify(experimentId) ?>;
+    let state = <?!= JSON.stringify(filterData) ?>;
+
+    window.onload = function() {
+      renderFilters();
+    };
+
+    function renderFilters() {
+      const container = document.getElementById('filters-container');
+      container.innerHTML = ''; 
+
+      state.filters.forEach((filter, index) => {
+        const card = document.createElement('div');
+        card.className = 'filter-card';
+        
+        // Setup dropdown options
+        const variantOptions = ['Both', 'A', 'B'].map(v => `<option value="${v}" ${filter.variant === v ? 'selected' : ''}>${v}</option>`).join('');
+        const typeOptions = ['Include', 'Exclude'].map(v => `<option value="${v}" ${filter.type === v ? 'selected' : ''}>${v}</option>`).join('');
+        const onOptions = ['Both', 'Experiment', 'Conversion'].map(v => `<option value="${v}" ${filter.onValue === v ? 'selected' : ''}>${v}</option>`).join('');
+        const scopeOptions = ['Event', 'User', 'Column'].map(v => `<option value="${v}" ${filter.scope === v ? 'selected' : ''}>${v}</option>`).join('');
+        
+        const currentScopeKey = filter.scope.toLowerCase();
+        const availableFields = state.fieldsMap[currentScopeKey] || [];
+        const fieldOptions = ['<option value="">-- Select Field --</option>'].concat(
+          availableFields.map(f => `<option value="${f}" ${filter.field === f ? 'selected' : ''}>${f}</option>`)
+        ).join('');
+
+        card.innerHTML = `
+          <div class="filter-header">
+            <span>Filter Rule ${index + 1}</span>
+            <button class="btn-remove" onclick="removeFilter(${index})">Delete</button>
+          </div>
+          
+          <div class="flex-row">
+            <div class="input-group">
+              <label>Variant</label>
+              <select onchange="updateFilter(${index}, 'variant', this.value)">${variantOptions}</select>
+            </div>
+            <div class="input-group">
+              <label>Filter Type</label>
+              <select onchange="updateFilter(${index}, 'type', this.value)">${typeOptions}</select>
+            </div>
+            <div class="input-group">
+              <label>Apply To</label>
+              <select onchange="updateFilter(${index}, 'onValue', this.value)">${onOptions}</select>
+            </div>
+            <div class="input-group">
+              <label>Filter Scope</label>
+              <select onchange="handleScopeChange(${index}, this.value)">${scopeOptions}</select>
+            </div>
+          </div>
+
+          <div class="flex-row">
+            <div class="input-group">
+              <label>Filter Field</label>
+              <select id="field-select-${index}" onchange="updateFilter(${index}, 'field', this.value)">${fieldOptions}</select>
+            </div>
+            <div class="input-group">
+              <label>Filter Value (RegEx Contains)</label>
+              <input id="value-input-${index}" type="text" value="${filter.value}" onchange="updateFilter(${index}, 'value', this.value)" placeholder="e.g. /checkout$">
+            </div>
+          </div>
+        `;
+        container.appendChild(card);
+      });
+    }
+
+    function updateFilter(index, key, value) {
+      state.filters[index][key] = value;
+    }
+
+    function handleScopeChange(index, newScope) {
+      state.filters[index].scope = newScope;
+      state.filters[index].field = ""; 
+      renderFilters(); 
+    }
+
+    function addFilter() {
+      state.filters.push({
+        variant: "Both",
+        type: "Include",
+        onValue: "Both",
+        scope: "Event",
+        field: "",
+        value: ""
+      });
+      renderFilters();
+    }
+
+    function removeFilter(index) {
+      state.filters.splice(index, 1);
+      renderFilters();
+    }
+
+    function saveData() {
+      let isValid = true;
+      let errorMessages = [];
+
+      state.filters.forEach((filter, index) => {
+        const fieldDropdown = document.getElementById(`field-select-${index}`);
+        const valueInput = document.getElementById(`value-input-${index}`);
+        
+        if (fieldDropdown) { fieldDropdown.style.borderColor = "#dadce0"; fieldDropdown.style.backgroundColor = "#fff"; }
+        if (valueInput) { valueInput.style.borderColor = "#dadce0"; valueInput.style.backgroundColor = "#fff"; }
+
+        if (!filter.field || filter.field.trim() === "") {
+          isValid = false;
+          errorMessages.push(`Rule ${index + 1}: Missing Filter Field`);
+          if (fieldDropdown) { fieldDropdown.style.borderColor = "#d93025"; fieldDropdown.style.backgroundColor = "#fce8e6"; }
+        }
+
+        if (!filter.value || filter.value.trim() === "") {
+          isValid = false;
+          errorMessages.push(`Rule ${index + 1}: Missing Filter Value`);
+          if (valueInput) { valueInput.style.borderColor = "#d93025"; valueInput.style.backgroundColor = "#fce8e6"; }
+        }
+      });
+
+      if (!isValid) {
+        alert("Hold up! Please fix the following errors:\n\n" + errorMessages.join("\n"));
+        return; 
+      }
+
+      const btn = document.getElementById('save-btn');
+      btn.disabled = true;
+      btn.innerText = "Saving...";
+
+      google.script.run
+        .withSuccessHandler(function() {
+          btn.innerText = "Saved!";
+          setTimeout(() => { btn.innerText = "Save Filters"; btn.disabled = false; }, 2000);
+        })
+        .saveFilterModalData(expId, state.filters);
+    }
+  </script>
+</body>
+</html>

@@ -76,7 +76,8 @@ You may have to scroll sideways in the table below to see all the settings.
     </tr>
 	<tr>
       <th scope="row" style="text-align: left;">AI Prompt</th>
-      <td>You are an automated data reporting system writing a formal summary for an executive dashboard. 
+      <td>To export AI Prompt to BigQuery, go to menu <strong>BigQuery A/B Analyzer -> Settings ->  Export AI Summary Settings</strong></td>
+	  <td>You are an automated data reporting system writing a formal summary for an executive dashboard. 
 Write exactly 2 to 6 concise sentences summarizing the following A/B test results. Begin your output directly with the analytical summary. 
 
 Follow these rules strictly:
@@ -88,8 +89,7 @@ Follow these rules strictly:
 6. Duration & Conclusion Strategy: Look at the "Estimated Days Remaining". 
    - If it is 0 days: State that the target sample size has been met and recommend concluding the test. 
    - If it is between 1 and 30 days: Recommend letting the test run for that specific number of days. 
-   - If it is greater than 30 days: DO NOT recommend letting it run. Instead, explicitly warn the audience that the site lacks sufficient daily traffic to reach statistical significance in a reasonable timeframe (under 30 days), and recommend either aborting the test or re-evaluating the traffic allocation strategy.
-   </td>
+   - If it is greater than 30 days: DO NOT recommend letting it run. Instead, explicitly warn the audience that the site lacks sufficient daily traffic to reach statistical significance in a reasonable timeframe (under 30 days), and recommend either aborting the test or re-evaluating the traffic allocation strategy.</td>
     </tr>
     <tr>
       <th colspan="3" scope="colgroup">Download data to Sheet Settings</th>
