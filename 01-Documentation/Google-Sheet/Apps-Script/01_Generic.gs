@@ -292,6 +292,9 @@ function insertRowsAndMerge() {
   const analyzeRule = SpreadsheetApp.newDataValidation()
     .requireValueInList(["Yes", "Update", "No"], true)
     .build();
+  const yesNoRule = SpreadsheetApp.newDataValidation()
+    .requireValueInList(["Yes", "No"], true)
+    .build();
   const hypothesisRule = SpreadsheetApp.newDataValidation()
     .requireValueInList(["One-sided", "Two-sided"], true)
     .build();
