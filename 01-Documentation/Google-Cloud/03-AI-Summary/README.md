@@ -35,27 +35,27 @@ Right now, the connection exists, but it doesn't have the security clearance to 
 
 ## Step 4: Setup Query for connecting to Gemini
 
-We are going to use [**Gemini model 2.5 Flash**](https://docs.cloud.google.com/vertex-ai/generative-ai/docs/models/gemini/2-5-flash).
+We are going to use [**Gemini model 3.5 Flash**](https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/gemini/3-5-flash).
 This is a fast and cheap model. At the time of writing, this is the latest "stable" model.
 
 Run this once in your BigQuery editor (adjusting your project/dataset/location/connection names):
 
 ```sql
-create or replace model `your-dataset.bigquery_ab_analyzer.gemini_narrator` -- Replace "your-dataset" with correct dataset.
-  remote with connection `your-dataset.eu.gemini_connection` -- Replace "your-dataset" with correct dataset. Replace "eu" with the location you are using.
-  options (
-    endpoint = 'gemini-2.5-flash' 
-  );
+	create or replace model `your-dataset.bigquery_ab_analyzer.gemini_narrator` -- Replace "your-dataset" with correct dataset.
+	remote with connection `your-dataset.eu.gemini_connection` -- Replace "your-dataset" with correct dataset. Replace "eu" with the location you are using.
+	options (
+		endpoint = 'gemini-3.5-flash' 
+	);
 ```
 
-[**Gemini model 2.5 Flash Lite**](https://docs.cloud.google.com/vertex-ai/generative-ai/docs/models/gemini/2-5-flash-lite) is an even faster and cheaper model, but in my testing it sometimes forgot some of the instructions.
+[**Gemini model 2.5 Flash Lite**](https://docs.cloud.google.com/vertex-ai/generative-ai/docs/models/gemini/3-5-flash-lite) is an even faster and cheaper model, but in my testing it sometimes forgot some of the instructions.
 If you want to test out **Flash Lite**, run this in the BigQuery editor:
 
 ```sql
 create or replace model `your-dataset.bigquery_ab_analyzer.gemini_narrator` -- Replace "your-dataset" with correct dataset.
   remote with connection `your-dataset.eu.gemini_connection` -- Replace "your-dataset" with correct dataset. Replace "eu" with the location you are using.
   options (
-    endpoint = 'gemini-2.5-flash-lite' 
+    endpoint = 'gemini-3.5-flash-lite' 
   );
 ```
 

@@ -126,23 +126,19 @@ begin
       from `your_project.bigquery_ab_analyzer.settings`
     );
   
-    if ai_prompt is null or ai_prompt = '' then
+   	if ai_prompt is null or ai_prompt = '' then
       set ai_prompt = concat(
-        'You are an automated data reporting system writing a formal summary for an executive dashboard. ',
-        'Write exactly 3 to 7 concise sentences summarizing the following A/B test results. Begin your output directly with the analytical summary. ',
-        'Follow these rules strictly: ',
-        '1. Winners & Significance: State if the test reached the Required Confidence Level. Declare the winner by explicitly quoting the findings in the "Conversion Details" or "Value Details" fields (e.g., state exactly how much better the winner performed). ',
-        '2. Business Impact: If the test involves a "Mean Value", state the Total Value driven by each variant to provide scale. Treat "Total Value" as a unitless number (DO NOT add currency symbols). ',
-        '3. Formatting: When citing statistical evidence, explicitly state whether you are referring to the "Conversion P-Value" or the "Value P-Value". Do not use scientific notation. Do not mention any metrics marked as N/A. ',
-        '4. Sample Size Warning: The required total target sample size for this test is {{TARGET_SAMPLE}}. If the combined Total Sample Size (Variant A + Variant B) is less than this target, you MUST warn the audience about the high risk of a "false positive" (Type 1 error). ',
-        '5. Underpowered Warning: If the total target size is set very low (below 1000), warn the audience that the test may be underpowered to reliably detect meaningful differences. ',
-        '6. Duration & Conclusion Strategy: Look at the "Estimated Days Remaining". ',
-        '-- If it is 0 days: State that the target sample size has been met and recommend concluding the test. ',
-        '-- If it is between 1 and 30 days: Recommend letting the test run for that specific number of days. ',
-        '-- If it is greater than 30 days: warn the audience that the site lacks sufficient daily traffic to reach statistical significance in a reasonable timeframe (under 30 days). ',
-        '7. Funnel Bottlenecks: If "FUNNEL JOURNEY DATA" is provided, identify the specific step where the highest percentage of users drop off. Compare Variant A and Variant B to explain exactly WHERE the winning variant is outperforming the loser in the user journey. ',
-        '8. Time Skew Analysis: If both "Median time" and "Average time" are provided for a funnel step, compare them. If the Average is significantly higher than the Median, explicitly state that a segment of users is delaying their action (e.g., leaving and returning later), creating a long-tail delay. ',
-        '9. Output Structure: You MUST format your final response into exactly two paragraphs separated by a blank line. Paragraph 1: The main statistical summary. Paragraph 2: The Funnel & Time Skew analysis.'
+        'You are a senior CRO and data analytics consultant summarizing A/B test results for an executive dashboard.\n',
+        'Write exactly two concise, highly structured paragraphs of professional prose separated by a single blank line. Do not use rule titles, bullet points, hyphens, or markdown headings.\n\n',
+        'Paragraph 1 — Executive Decision & Statistical Summary:\n',
+        '1. Lead immediately with a clear verdict: Declare the winning variant (or "Inconclusive/No Winner"), state whether it achieved the Required Confidence Level, and quote the exact conversion lift from "Conversion Details".\n',
+        '2. Synthesize business impact: If monetary or mean values are present, evaluate whether the lift is driven by higher conversion volume, higher average order value, or both. Treat total value as a unitless scale metric (do not add currency symbols). Reference Conversion P-Value or Value P-Value explicitly without scientific notation.\n',
+        '3. Decision & Horizon Check: Check sample size against {{TARGET_SAMPLE}} and "Estimated Days Remaining". If traffic is below target, warn of false-positive (peeking) risk and recommend letting the test run for the remaining days. If target is reached (0 days remaining), recommend closing the test. If underpowered (<1000 sample target), note the detection limitation.\n\n',
+        'Paragraph 2 — Funnel & User Behavior Dynamics:\n',
+        'If funnel journey data is provided:\n',
+        '1. Journey Bottlenecks: Identify the step with the highest drop-off and explain specifically where and how the winning variant outperforms the control (e.g., superior top-of-funnel engagement vs. checkout completion).\n',
+        '2. Behavioral Latency: Compare median vs. average step duration. If average time is substantially higher than median time, explicitly explain that a subset of users is delaying action (long-tail delay / return visits).\n',
+        'If no funnel data is present, omit this second paragraph entirely.'
       );
     end if;
 
@@ -1033,11 +1029,11 @@ begin
     ----------------------------------------------------------------------------
     if ai_summary_activated then
       update `your_project.bigquery_ab_analyzer.experiments_report` dest
-        set ai_summary = JSON_VALUE(ai.ml_generate_text_result, '$.candidates[0].content.parts[0].text')
+        set ai_summary = ai.ml_generate_text_llm_result
         from (
           select
             id,
-            ml_generate_text_result
+            ml_generate_text_llm_result
           from ML.GENERATE_TEXT(
             model `your_project.bigquery_ab_analyzer.gemini_narrator`,
             (
@@ -1083,7 +1079,7 @@ begin
                   'Value P-Value: ', coalesce(format('%.4f', rep.value_p_value), 'N/A'), '. ',
                   'Value Details: ', coalesce(rep.value_details, 'N/A'), '.\n\n',
                   
-                  '--- FUNNEL JOURNEY DATA ---\n',
+                  '\n\n--- FUNNEL JOURNEY DATA ---\n',
                   coalesce(funnel.funnel_text, 'No funnel tracking activated for this test.')
                 ) as prompt
               from `your_project.bigquery_ab_analyzer.experiments_report` rep
@@ -1110,7 +1106,8 @@ begin
             ),
             struct(
               0.2 as temperature, 
-              400 as max_output_tokens
+              4096 as max_output_tokens,
+              TRUE as flatten_json_output
             )
           )
         ) as ai

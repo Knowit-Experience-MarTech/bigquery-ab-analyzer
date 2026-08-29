@@ -30,7 +30,7 @@ The solution is built around **Google Sheet**, **BigQuery**, **Vertex AI** and *
 3. [Data Studio / presenting results](01-Documentation/Data-Studio)
 
 ## 3. Upgrading
-* [2.2 is latest version](../../releases/tag/v2.2).
+* [v2.22 is latest version](../../releases/tag/v2.22).
 
 ## 4. The "Backbone": Configuration-Driven Architecture
 
