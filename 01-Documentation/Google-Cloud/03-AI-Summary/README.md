@@ -48,7 +48,7 @@ Run this once in your BigQuery editor (adjusting your project/dataset/location/c
 	);
 ```
 
-[**Gemini model 2.5 Flash Lite**](https://docs.cloud.google.com/vertex-ai/generative-ai/docs/models/gemini/3-5-flash-lite) is an even faster and cheaper model, but in my testing it sometimes forgot some of the instructions.
+[**Gemini model 3.5 Flash Lite**](https://docs.cloud.google.com/vertex-ai/generative-ai/docs/models/gemini/3-5-flash-lite) is an even faster and cheaper model, but in my testing it sometimes forgot some of the instructions.
 If you want to test out **Flash Lite**, run this in the BigQuery editor:
 
 ```sql
