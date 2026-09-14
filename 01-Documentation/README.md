@@ -13,6 +13,15 @@ The **BigQuery A/B Analyzer** is a tool that allows you to define, manage, and a
 
 This tool uses a manual "sync" model to give you control over costs and timing. It does not update automatically in the background.
 
+### Step A: Initialize onEdit Trigger
+
+Filtering and funnels requires a special **onEdit** trigger.
+
+1. Click the menu 📈 **BigQuery A/B Analyzer** at the top.
+2. Select **Settings > Initialize onEdit Trigger**.
+
+Wait for the "toast" notification at the bottom right confirming success. You only need to do this the first time you are using the Google Sheet.
+
 ### Step A: Refresh Metadata
 
 To see the latest event names and parameters in your dropdown menus, you must pull metadata from BigQuery.

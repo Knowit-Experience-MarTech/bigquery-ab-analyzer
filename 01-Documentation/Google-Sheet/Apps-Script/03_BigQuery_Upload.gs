@@ -1365,7 +1365,7 @@ function ISVALIDREGEX(regexString) {
 }
 
 /*********************************************************
- * FUNNELS COMPILER: Gathers and formats funnel steps into JSON (Variant Aware)
+ * FUNNELS COMPILER: Gathers and formats funnel steps into JSON (Variant & Multi-Filter Aware)
  *********************************************************/
 function getFunnelsMap() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
@@ -1377,12 +1377,14 @@ function getFunnelsMap() {
   const lastRow = sheet.getLastRow();
   if (lastRow < 5) return map; // No data yet
 
-  // Read data (Now 7 columns wide due to new Variant column)
+  // Read data
   // Col A(0): ID, B(1): Step, C(2): Variant, D(3): Event, E(4): Filter On, F(5): Param, G(6): Value
   const data = sheet.getRange(5, 1, lastRow - 4, 7).getValues();
+  
+  // Structure: grouped[id][variant][stepNum] = { step_number, event, filters: [] }
   const grouped = {};
 
-  // 1. Group by ID and Variant
+  // 1. Group by ID, Variant, and Step Number
   for (let i = 0; i < data.length; i++) {
     const row = data[i];
     const id = normalizeExperimentId(row[0]);
@@ -1409,8 +1411,24 @@ function getFunnelsMap() {
     if (!grouped[id]) grouped[id] = {};
 
     variantsToApply.forEach(v => {
-      if (!grouped[id][v]) grouped[id][v] = [];
-      grouped[id][v].push({ stepNum, eventName, filterOn, paramKey, paramVal });
+      if (!grouped[id][v]) grouped[id][v] = {};
+      
+      // Initialize the step container if first time seeing this stepNum
+      if (!grouped[id][v][stepNum]) {
+        grouped[id][v][stepNum] = {
+          step_number: stepNum,
+          event: eventName,
+          filters: []
+        };
+      }
+
+      // Add filter to the step's array if present and active
+      if (filterOn && paramKey && paramVal) {
+        grouped[id][v][stepNum].filters.push({
+          param_key: paramKey,
+          param_val: paramVal
+        });
+      }
     });
   }
 
@@ -1418,25 +1436,11 @@ function getFunnelsMap() {
   for (const id in grouped) {
     map[id] = {};
     for (const v in grouped[id]) {
-      
-      // Sort by step number to ensure the array is strictly in order
-      grouped[id][v].sort((a, b) => a.stepNum - b.stepNum);
+      // Sort steps strictly by step_number
+      const stepsArray = Object.values(grouped[id][v])
+        .sort((a, b) => a.step_number - b.step_number);
 
-      const stepsArray = grouped[id][v].map(s => {
-        // ADDED step_number HERE:
-        const obj = { 
-          step_number: s.stepNum,
-          event: s.eventName 
-        };
-        
-        if (s.filterOn && s.paramKey && s.paramVal) {
-          obj.param_key = s.paramKey;
-          obj.param_val = s.paramVal;
-        }
-        return obj;
-      });
-
-      map[id][v] = JSON.stringify(stepsArray);
+      map[id][v] = stepsArray.length > 0 ? JSON.stringify(stepsArray) : null;
     }
   }
   

@@ -23,7 +23,8 @@ function onOpen() {
       .addItem('Refresh Events', 'refreshEvents')
       .addItem('Refresh Parameters', 'refreshParameters'))
     .addSubMenu(ui.createMenu('Settings')
-      .addItem('Export AI Summary Settings', 'exportSettingsToBigQuery'))
+      .addItem('Export AI Summary Settings', 'exportSettingsToBigQuery')
+      .addItem('Initialize onEdit Trigger', 'setupInstallableTrigger'))
     .addItem('Check for Updates', 'checkForUpdates')
     .addToUi();
 }
@@ -1169,20 +1170,19 @@ function tickAllQueryInfoCheckboxes() {
 }
 
 // ==========================================
-// FUNNEL MODAL BACKEND
+// FUNNEL MODAL BACKEND (MULTI-FILTER SUPPORT)
 // ==========================================
 
 function openFunnelModal(expId) {
   const html = HtmlService.createTemplateFromFile('FunnelModal');
   
-  // Pass the variables directly to the HTML template object
   html.experimentId = expId; 
   html.funnelData = getFunnelModalData(expId); 
   
   const page = html.evaluate()
       .setTitle('Edit Funnel: ' + expId)
-      .setWidth(650) 
-      .setHeight(600);
+      .setWidth(750) 
+      .setHeight(680);
       
   SpreadsheetApp.getUi().showModelessDialog(page, 'Edit Funnel: ' + expId);
 }
@@ -1191,36 +1191,52 @@ function getFunnelModalData(expId) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const funnelsSheet = ss.getSheetByName(funnelSheetName);
   
-  // 1. Fetch Existing Steps for this Experiment
-  let steps = [];
-  const lastRow = funnelsSheet.getLastRow();
+  // 1. Fetch Existing Steps for this Experiment & group filters by stepNum
+  const stepsMap = {};
+  const lastRow = funnelsSheet ? funnelsSheet.getLastRow() : 0;
   
   if (lastRow >= 5) {
-    // Read columns A through G
+    // Columns: A: expId, B: stepNum, C: variant, D: eventName, E: filterOn, F: filterField, G: filterValue
     const data = funnelsSheet.getRange(5, 1, lastRow - 4, 7).getValues();
     for (let i = 0; i < data.length; i++) {
       if (String(data[i][0]).trim() === String(expId).trim()) {
-        steps.push({
-          stepNum: parseInt(data[i][1]) || 1,
-          variant: data[i][2] || "Both",
-          eventName: data[i][3] || "",
-          filterOn: data[i][4] === true || String(data[i][4]).toLowerCase() === 'true',
-          filterField: data[i][5] || "",
-          filterValue: data[i][6] || "" // Added Column G
-        });
+        const stepNum = parseInt(data[i][1]) || 1;
+        const filterField = String(data[i][5] || "").trim();
+        const filterVal = String(data[i][6] || "").trim();
+        
+        if (!stepsMap[stepNum]) {
+          stepsMap[stepNum] = {
+            stepNum: stepNum,
+            variant: data[i][2] || "Both",
+            eventName: data[i][3] || "",
+            filters: []
+          };
+        }
+        
+        if (filterField !== "") {
+          stepsMap[stepNum].filters.push({
+            param_key: filterField,
+            param_val: filterVal
+          });
+        }
       }
     }
   }
 
-  // If no steps exist, provide a default Step 1
+  let steps = Object.values(stepsMap);
+
   if (steps.length === 0) {
-    steps.push({ stepNum: 1, variant: "Both", eventName: "", filterOn: false, filterField: "", filterValue: "" });
+    steps.push({ 
+      stepNum: 1, 
+      variant: "Both", 
+      eventName: "", 
+      filters: [] 
+    });
   } else {
-    // Sort steps numerically just in case they got jumbled in the sheet
     steps.sort((a, b) => a.stepNum - b.stepNum); 
   }
 
-  // 2. Fetch Dropdown Options
+  // 2. Fetch Dropdown Options (Events + Event & Item Fields)
   let events = [];
   try {
     const eventsRange = ss.getRangeByName('DropdownLookupEvents');
@@ -1230,7 +1246,11 @@ function getFunnelModalData(expId) {
   let filterFields = [];
   try {
     const filterFieldsMap = getFilterFieldsMap();
-    if (filterFieldsMap && filterFieldsMap.event) filterFields = filterFieldsMap.event;
+    const eventFields = filterFieldsMap.event || [];
+    const itemFields = (filterFieldsMap.column || []).filter(field => 
+      field.toLowerCase().startsWith('item') || field.toLowerCase().startsWith('items.')
+    );
+    filterFields = Array.from(new Set([...eventFields, ...itemFields])).sort((a, b) => a.localeCompare(b));
   } catch(e) {}
 
   return {
@@ -1247,7 +1267,7 @@ function saveFunnelModalData(expId, stepsArray) {
   
   if (!funnelsSheet || !expSheet) return "Error: Sheets not found.";
 
-  // 1. Delete all existing rows for this specific experiment ID in the Funnels sheet
+  // 1. Delete all existing rows for this specific experiment ID
   const lastRow = funnelsSheet.getLastRow();
   if (lastRow >= 5) {
     const ids = funnelsSheet.getRange(5, 1, lastRow - 4, 1).getValues();
@@ -1258,149 +1278,44 @@ function saveFunnelModalData(expId, stepsArray) {
     }
   }
 
-  // 2. Insert the updated steps
+  // 2. Insert the updated relational rows
   const hasFunnel = stepsArray && stepsArray.length > 0;
   
   if (hasFunnel) {
     stepsArray.sort((a, b) => parseInt(a.stepNum) - parseInt(b.stepNum));
     
-    const newData = stepsArray.map(step => [
-      expId,
-      parseInt(step.stepNum),
-      step.variant,
-      step.eventName,
-      step.filterOn,
-      step.filterField,
-      step.filterValue || "" 
-    ]);
+    const flatRows = [];
+    stepsArray.forEach(step => {
+      const stepNum = parseInt(step.stepNum);
+      const variant = step.variant || "Both";
+      const eventName = step.eventName || "";
+      const validFilters = (step.filters || []).filter(f => f.param_key && f.param_key.trim() !== "");
 
-    const insertRow = Math.max(5, funnelsSheet.getLastRow() + 1);
-    funnelsSheet.getRange(insertRow, 1, newData.length, newData[0].length).setValues(newData);
-    
-    for (let i = 0; i < newData.length; i++) {
-      const bgColor = ((insertRow + i) % 2 !== 0) ? '#ffffff' : '#f1f1f1';
-      funnelsSheet.getRange(insertRow + i, 1, 1, funnelsSheet.getMaxColumns()).setBackground(bgColor).setFontColor('#000000');
-    }
-  }
-  
-  // 3. Update the Checkbox Status in the Experiments Sheet
-  const expLastRow = expSheet.getLastRow();
-  if (expLastRow >= firstRow) {
-    // Read the IDs to find which row triggered this save
-    const expIds = expSheet.getRange(firstRow, idColumn, expLastRow - firstRow + 1, 1).getValues();
-    const expNames = expSheet.getRange(firstRow, experimentNameColumn, expLastRow - firstRow + 1, 1).getValues();
-    
-    for (let r = 0; r < expIds.length; r++) {
-      const rowNum = firstRow + r;
-      
-      // Only check the top row of the 2-row blocks
-      if ((rowNum - firstRow) % 2 !== 0) continue; 
-      
-      const currentId = String(expIds[r][0] || "").trim();
-      const currentName = String(expNames[r][0] || "").trim();
-      
-      // If we found the row, check or uncheck the box based on whether steps exist
-      if (currentId === String(expId).trim() || currentName === String(expId).trim()) {
-        expSheet.getRange(rowNum, funnelsColumn).setValue(hasFunnel);
-        break;
-      }
-    }
-  }
-  
-  return "Success";
-}
-
-// ==========================================
-// FILTER MODAL BACKEND
-// ==========================================
-
-function openFilterModal(expId) {
-  const html = HtmlService.createTemplateFromFile('FilterModal');
-  
-  html.experimentId = expId; 
-  html.filterData = getFilterModalData(expId); 
-  
-  const page = html.evaluate()
-      .setTitle('Edit Filters: ' + expId)
-      .setWidth(650)  
-      .setHeight(500); 
-      
-  SpreadsheetApp.getUi().showModelessDialog(page, 'Edit Filters: ' + expId);
-}
-
-function getFilterModalData(expId) {
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const filterSheet = ss.getSheetByName(filtersSheetName);
-  
-  let filters = [];
-  const lastRow = filterSheet ? filterSheet.getLastRow() : 0;
-  
-  if (lastRow >= 2) {
-    const data = filterSheet.getRange(2, 1, lastRow - 1, 7).getValues();
-    for (let i = 0; i < data.length; i++) {
-      if (String(data[i][0]).trim() === String(expId).trim()) {
-        filters.push({
-          variant: data[i][1] || "Both", 
-          type: data[i][2] || "Include",
-          onValue: data[i][3] || "Both",
-          scope: data[i][4] || "Event",
-          field: data[i][5] || "",
-          value: data[i][6] || ""
+      if (validFilters.length === 0) {
+        // Step without filters -> 1 row with blank filter columns
+        flatRows.push([expId, stepNum, variant, eventName, false, "", ""]);
+      } else {
+        // Step with N filters -> N relational rows
+        validFilters.forEach(f => {
+          flatRows.push([expId, stepNum, variant, eventName, true, f.param_key.trim(), f.param_val || ""]);
         });
       }
-    }
-  }
+    });
 
-  let fieldsMap = { event: [], user: [], column: [] };
-  try {
-    fieldsMap = getFilterFieldsMap();
-  } catch(e) {}
-
-  return {
-    filters: filters,
-    fieldsMap: fieldsMap
-  };
-}
-
-function saveFilterModalData(expId, filtersArray) {
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const filterSheet = ss.getSheetByName(filtersSheetName);
-  const expSheet = ss.getSheetByName(experimentSheetName);
-  
-  if (!filterSheet || !expSheet) return "Error: Sheets not found.";
-
-  const lastRow = filterSheet.getLastRow();
-  if (lastRow >= 2) {
-    const ids = filterSheet.getRange(2, 1, lastRow - 1, 1).getValues();
-    for (let i = ids.length - 1; i >= 0; i--) {
-      if (String(ids[i][0]).trim() === String(expId).trim()) {
-        filterSheet.deleteRow(i + 2); 
+    if (flatRows.length > 0) {
+      const insertRow = Math.max(5, funnelsSheet.getLastRow() + 1);
+      funnelsSheet.getRange(insertRow, 1, flatRows.length, 7).setValues(flatRows);
+      
+      for (let i = 0; i < flatRows.length; i++) {
+        const bgColor = ((insertRow + i) % 2 !== 0) ? '#ffffff' : '#f1f1f1';
+        funnelsSheet.getRange(insertRow + i, 1, 1, funnelsSheet.getMaxColumns())
+          .setBackground(bgColor)
+          .setFontColor('#000000');
       }
     }
   }
-
-  const hasFilters = filtersArray && filtersArray.length > 0;
   
-  if (hasFilters) {
-    const newData = filtersArray.map(f => [
-      expId,
-      f.variant || "Both", 
-      f.type,
-      f.onValue,
-      f.scope,
-      f.field,
-      f.value || ""
-    ]);
-
-    const insertRow = Math.max(2, filterSheet.getLastRow() + 1);
-    filterSheet.getRange(insertRow, 1, newData.length, 7).setValues(newData);
-    
-    for (let i = 0; i < newData.length; i++) {
-      const bgColor = ((insertRow + i) % 2 !== 0) ? '#f1f1f1' : '#ffffff';
-      filterSheet.getRange(insertRow + i, 1, 1, 7).setBackground(bgColor).setFontColor('#000000');
-    }
-  }
-  
+  // 3. Update the Funnel Checkbox in the Experiments Sheet
   const expLastRow = expSheet.getLastRow();
   if (expLastRow >= firstRow) {
     const expIds = expSheet.getRange(firstRow, idColumn, expLastRow - firstRow + 1, 1).getValues();
@@ -1414,7 +1329,7 @@ function saveFilterModalData(expId, filtersArray) {
       const currentName = String(expNames[r][0] || "").trim();
       
       if (currentId === String(expId).trim() || currentName === String(expId).trim()) {
-        expSheet.getRange(rowNum, filterColumn).setValue(hasFilters); 
+        expSheet.getRange(rowNum, funnelsColumn).setValue(hasFunnel);
         break;
       }
     }
@@ -1487,4 +1402,32 @@ function copyFiltersForExperiment(oldId, newId) {
       filterSheet.getRange(insertRow + i, 1, 1, 7).setBackground(bgColor).setFontColor('#000000');
     }
   }
+}
+
+/**
+ * Automatically creates the installable onEdit trigger if it doesn't already exist.
+ * Safe to run multiple times without creating duplicates.
+ */
+function setupInstallableTrigger() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const triggers = ScriptApp.getUserTriggers(ss);
+  
+  // Check if installedOnEdit is already wired up
+  const triggerExists = triggers.some(t => 
+    t.getHandlerFunction() === 'installedOnEdit' && 
+    t.getEventType() === ScriptApp.EventType.ON_EDIT
+  );
+
+  if (triggerExists) {
+    ss.toast("Installable onEdit trigger is already active.", "Trigger Setup", 4);
+    return;
+  }
+
+  // Create the trigger programmatically
+  ScriptApp.newTrigger('installedOnEdit')
+    .forSpreadsheet(ss)
+    .onEdit()
+    .create();
+
+  ss.toast("Installable onEdit trigger installed successfully! Modals and automated formatting are now active.", "Success", 6);
 }

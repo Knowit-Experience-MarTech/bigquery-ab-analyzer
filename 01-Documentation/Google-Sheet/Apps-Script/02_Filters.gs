@@ -16,7 +16,7 @@
   
 /***** FILTERS MODULE *****/
 
-// ==========================================
+/// ==========================================
 // FILTER MODAL BACKEND
 // ==========================================
 
@@ -29,7 +29,7 @@ function openFilterModal(expId) {
   const page = html.evaluate()
       .setTitle('Edit Filters: ' + expId)
       .setWidth(650)  
-      .setHeight(600); 
+      .setHeight(500); 
       
   SpreadsheetApp.getUi().showModelessDialog(page, 'Edit Filters: ' + expId);
 }
@@ -46,7 +46,7 @@ function getFilterModalData(expId) {
     for (let i = 0; i < data.length; i++) {
       if (String(data[i][0]).trim() === String(expId).trim()) {
         filters.push({
-          variant: data[i][1] || "Both", // <-- Added Variant mapping (Col B)
+          variant: data[i][1] || "Both", 
           type: data[i][2] || "Include",
           onValue: data[i][3] || "Both",
           scope: data[i][4] || "Event",
@@ -90,7 +90,7 @@ function saveFilterModalData(expId, filtersArray) {
   if (hasFilters) {
     const newData = filtersArray.map(f => [
       expId,
-      f.variant || "Both", // <-- Now saving the chosen Variant dynamically
+      f.variant || "Both", 
       f.type,
       f.onValue,
       f.scope,
@@ -120,7 +120,7 @@ function saveFilterModalData(expId, filtersArray) {
       const currentName = String(expNames[r][0] || "").trim();
       
       if (currentId === String(expId).trim() || currentName === String(expId).trim()) {
-        expSheet.getRange(rowNum, 18).setValue(hasFilters); 
+        expSheet.getRange(rowNum, filterColumn).setValue(hasFilters); 
         break;
       }
     }

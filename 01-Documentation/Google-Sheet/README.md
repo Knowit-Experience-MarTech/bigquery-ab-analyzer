@@ -7,8 +7,11 @@ If you haven't done so already, do the following Google Sheet setup:
 1. Create a folder in **Google Drive** for the **BigQuery A/B Analyzer** solution.
 	1. Within that folder, create a **Images** folder.
 		1. Change **sharing** on the **Images** folder to **Anyone on the Internet with the link can view**.
-2. Copy the [**Google Sheet**](https://docs.google.com/spreadsheets/d/1UC2CyflDU20liWG4QWxXLJWaBPh5A3GPgbSNDt-EKN0/edit?usp=sharing) into the **BigQuery A/B Analyzer** folder.
+2. Copy the [**Google Sheet**](https://docs.google.com/spreadsheets/d/1s7gXuAao0mOoRl0gDmeqMincb4lolLhP1QM6iUU9lvU/edit?usp=sharing) into the **BigQuery A/B Analyzer** folder.
 	1. Go to the [**Settings** sheet](Settings-Sheet). Follow the setup there.
+3. Initialize **onEdit Trigger** the first time you uses the Google Sheet. Filtering and funnels requires a special **onEdit** trigger.
+	1. Click the menu 📈 **BigQuery A/B Analyzer** at the top.
+	2. Select **Settings > Initialize onEdit Trigger**.
 
 Almost everything is powered by **[Apps Script](Apps-Script)**.
 
@@ -305,16 +308,16 @@ Funnel settings are saved to a hidden **Funnel sheet**.
       <td>Select <strong>Event Name</strong> for the step.</td>
     </tr>
     <tr>
-      <th scope="row" style="text-align: left;">Apply Event Filter</th>
-      <td>Checkbox</td>
-      <td>✔</td>
-      <td>Tick this checkbox if you need to filter the step.</td>
+      <th scope="row" style="text-align: left;">Add Filter</th>
+      <td>Button</td>
+      <td> </td>
+      <td>Click this button if you needs to filter the step. Event or Item scoped parameters are supported. You can combine both Event and Item Parameters.</td>
     </tr>
     <tr>
       <th scope="row" style="text-align: left;">Filter Field</th>
       <td>Dropdown</td>
       <td>page_location</td>
-      <td>Event Parameter that you needs to filter.</td>
+      <td>Event or Item Scoped Parameter that you needs to filter.</td>
     </tr>
     <tr>
       <th scope="row" style="text-align: left;">Filter Value (RegEx Contains)</th>

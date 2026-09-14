@@ -30,7 +30,7 @@ The solution is built around **Google Sheet**, **BigQuery**, **Vertex AI** and *
 3. [Data Studio / presenting results](01-Documentation/Data-Studio)
 
 ## 3. Upgrading
-* [v2.22 is latest version](../../releases/tag/v2.22).
+* [v2.3 is latest version](../../releases/tag/v2.3).
 
 ## 4. The "Backbone": Configuration-Driven Architecture
 
@@ -127,6 +127,8 @@ The framework supports multi-step funnel analysis to visualize the user journey 
 * Time is calculated from the first time a user interacted with the **event** in the funnel in the analysed period.
 	* If your analysis is **User Scoped**, the time will tell you about user behaviour. Ex. user starts the funnel (view_cart), leaves the site and comes back 2 hours later and completes the funnel (view_cart -> begin_checkout -> purchase). Time between <code>view_cart</code> and <code>begin_checkout</code> will be 2 hours.
 	* If you want to understand friction in the funnel itself, a **Session Scoped** analysis may work better.
+
+<img src="02-Images/bigqery-ab-analyzer-google-sheet-funnels.png" alt="BigQuery A/B Analyzer - Google Sheet Funnel Filtering" />
 
 ## 6. The Statistical Engine (Calculation Method)
 

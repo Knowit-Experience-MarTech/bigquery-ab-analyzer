@@ -21,7 +21,7 @@
   -- CHECK REGION: Replace 'region-eu' with 'region-us' if your data is in US
  ----------------------------------------------------------------------------------------------------------------------------
 
--- We use a Temp Function to perfectly format BigQuery JSON paths. 
+-- Universal Temp Function to format BigQuery JSON paths: $.key for normal, $."key" for spaces/special characters
 create temp function format_bq_json_path(path_str string) returns string AS (
   (
     select concat('$', string_agg(
@@ -62,22 +62,32 @@ begin
   declare value_expr                string  default 'null';
 
   -- Funnel Add-on Variables
-  declare funnel_json_str string default null;
-  declare funnel_cte_sql string;
-  declare funnel_select_sql string;
-  declare funnel_steps_json json;
-  declare num_steps int64;
-  declare current_event string;
-  declare current_param_key string;
-  declare current_param_val string;
-  declare clean_json_path string;
-  declare param_filter string;
-  declare union_string string;
-  declare i int64;
-  declare explicit_step int64;
-  declare has_funnel_params bool;
-  declare param_col_sql string;
-  declare funnel_grouping string;
+  declare funnel_json_str           string  default null;
+  declare funnel_cte_sql            string;
+  declare funnel_select_sql         string;
+  declare funnel_steps_json         json;
+  declare num_steps                 int64;
+  declare current_event             string;
+  declare union_string              string;
+  declare i                         int64;
+  declare explicit_step             int64;
+  declare has_funnel_params         bool;
+  declare param_col_sql             string;
+  declare funnel_grouping           string;
+  declare current_step_label        string;
+
+  -- Multi-filter funnel loop variables
+  declare j                         int64;
+  declare num_sub_filters           int64;
+  declare current_filters_json      json;
+  declare sub_filter_key            string;
+  declare sub_filter_val            string;
+  declare clean_sub_path            string;
+  declare param_filter              string;
+  declare sub_parent_key            string;
+  declare sub_child_key             string;
+  declare sub_q_parent              string;
+  declare sub_q_child               string;
 
   declare exposure_guard            string  default '';
   declare variant_key               string  default '';
@@ -87,19 +97,29 @@ begin
   declare value_json_path           string  default '';
 
   declare has_variant_key           bool    default false;
-  declare extracted_variant_expr    string  default 'null'; 
-  declare where_variant_expr        string  default 'null'; 
+  declare extracted_variant_expr     string  default 'null'; 
+  declare where_variant_expr         string  default 'null'; 
 
   declare is_exclude                bool    default false;
   declare norm_path                 string  default '';
+  declare has_dot                   bool    default false;
   declare dotq_path                 string  default '';
   declare json_event_expr           string  default '';
 
-  declare query_info_logging        bool default false;
+  -- Nested Array Processing Variables
+  declare parent_key                string  default '';
+  declare child_key                 string  default '';
+  declare val_norm_path             string  default '';
+  declare val_parent_key            string  default '';
+  declare val_child_path            string  default '';
+  declare val_q_parent              string  default '';
+  declare val_q_child               string  default '';
+
+  declare query_info_logging        bool    default false;
   declare query_price_per_tib       float64;
 
-  declare ai_summary_activated    bool default false; 
-  declare ai_prompt               string default '';
+  declare ai_summary_activated      bool    default false; 
+  declare ai_prompt                 string  default '';
 
   declare is_mixpanel bool default (
     select exists(
@@ -126,7 +146,7 @@ begin
       from `your_project.bigquery_ab_analyzer.settings`
     );
   
-   	if ai_prompt is null or ai_prompt = '' then
+    if ai_prompt is null or ai_prompt = '' then
       set ai_prompt = concat(
         'You are a senior CRO and data analytics consultant summarizing A/B test results for an executive dashboard.\n',
         'Write exactly two concise, highly structured paragraphs of professional prose separated by a single blank line. Do not use rule titles, bullet points, hyphens, or markdown headings.\n\n',
@@ -142,9 +162,9 @@ begin
       );
     end if;
 
-  ---------------------------------------------------------------------------
-  -- (2) Temp result table
-  ---------------------------------------------------------------------------
+    ---------------------------------------------------------------------------
+    -- (2) Temp result table
+    ---------------------------------------------------------------------------
     if query_info_logging then
       create or replace temp table bigquery_ab_analyzer_query_information_buffer (
         id string,
@@ -196,7 +216,7 @@ begin
     ) do
 
     -------------------------------------------------------------------------
-    -- Identity logic (Mixpanel)
+    -- Identity logic
     -------------------------------------------------------------------------
     if rec.scope = "User" then
       if rec.identity_source = "EXP_DEVICE_ID" then
@@ -209,9 +229,8 @@ begin
         set id_filter = "";
       end if;
     else
-      -- Session scope (Mixpanel typically tracks sessions via $session_id in properties)
+      -- Session scope
       set id_expr = "distinct_id";
-      -- NOTE: Because this is a SET variable enclosed in double quotes, we escape the inner double quotes for the JSON path
       set id_predicate = "distinct_id is not null and distinct_id != '' and json_value(properties, '$.\"$session_id\"') is not null";
       set id_filter = "";
     end if;
@@ -231,22 +250,39 @@ begin
 
     -- Exposure guard and variant path
     set variant_key = rec.experiment_variant_parameter;
-    set exposure_guard = concat(" and event_name = '", rec.experiment_event_name, "'");
+    set exposure_guard = concat(" and event_name = '", replace(rec.experiment_event_name, "'", "\\'"), "'");
 
     set has_variant_key = length(trim(coalesce(variant_key,''))) > 0;
 
     if has_variant_key then
       set norm_path = trim(regexp_replace(trim(variant_key), r'\s*\.\s*', '.'), '.');
-      set variant_json_path = format_bq_json_path(norm_path);
-      set extracted_variant_expr = concat("json_value(a.properties, '", variant_json_path, "')");
-      set where_variant_expr = concat("json_value(properties, '", variant_json_path, "')");
+      set has_dot = regexp_contains(norm_path, r'\.');
+
+      if has_dot then
+        set parent_key = split(norm_path, '.')[offset(0)];
+        set child_key = substr(norm_path, length(parent_key) + 2);
+        
+        set val_q_parent = format_bq_json_path(parent_key);
+        set val_q_child = format_bq_json_path(child_key);
+
+        set extracted_variant_expr = concat(
+          "(select json_value(item, '", val_q_child, "') from unnest(json_extract_array(a.properties, '", val_q_parent, "')) as item limit 1)"
+        );
+        set where_variant_expr = concat(
+          "(select json_value(item, '", val_q_child, "') from unnest(json_extract_array(properties, '", val_q_parent, "')) as item limit 1)"
+        );
+      else
+        set variant_json_path = format_bq_json_path(norm_path);
+        set extracted_variant_expr = concat("json_value(a.properties, '", variant_json_path, "')");
+        set where_variant_expr = concat("json_value(properties, '", variant_json_path, "')");
+      end if;
     else
       set extracted_variant_expr = "null";
       set where_variant_expr = "null";
     end if;
 
     -------------------------------------------------------------------------
-    -- Build filters
+    -- Build filters (Dynamic detection: Flat Properties vs. Nested Arrays)
     -------------------------------------------------------------------------
     for f in (
       select filter_type, filter_on_value, filter_field, filter_value, filter_scope
@@ -256,6 +292,7 @@ begin
     
       set is_exclude = false;
       set norm_path = '';
+      set has_dot = false;
       set dotq_path = '';
       set json_event_expr = '';
 
@@ -263,8 +300,24 @@ begin
       set norm_path = trim(regexp_replace(trim(f.filter_field), r'\s*\.\s*', '.'), '.');
 
       if norm_path != '' then
-        set dotq_path = format_bq_json_path(norm_path);
-        set json_event_expr = concat("regexp_contains(coalesce(json_value(properties, '", dotq_path, "'), ''), r'", f.filter_value, "')");
+        set has_dot = regexp_contains(norm_path, r'\.');
+
+        if has_dot then
+          -- Dynamic Item / Nested Array Scope (e.g. Items.Category, products.brand)
+          set parent_key = split(norm_path, '.')[offset(0)];
+          set child_key = substr(norm_path, length(parent_key) + 2);
+
+          set val_q_parent = format_bq_json_path(parent_key);
+          set val_q_child = format_bq_json_path(child_key);
+
+          set json_event_expr = concat(
+            "(select count(1) > 0 from unnest(json_extract_array(properties, '", val_q_parent, "')) as item where regexp_contains(coalesce(json_value(item, '", val_q_child, "'), ''), r'", f.filter_value, "'))"
+          );
+        else
+          -- Flat Scope
+          set dotq_path = format_bq_json_path(norm_path);
+          set json_event_expr = concat("regexp_contains(coalesce(json_value(properties, '", dotq_path, "'), ''), r'", f.filter_value, "')");
+        end if;
 
         if f.filter_scope in ('Event', 'User', 'Column') then
           if f.filter_on_value in ('Experiment Event','Both') then
@@ -281,14 +334,25 @@ begin
     set conv_filter = conv_filter || id_filter;
 
     -------------------------------------------------------------------------
-    -- Value expression
+    -- Value expression (Dynamic detection: Flat Property vs. Nested Array Sum)
     -------------------------------------------------------------------------
     if rec.experiment_event_value_parameter is null or trim(rec.experiment_event_value_parameter) = '' then
       set value_expr = 'null';
     else
-      set norm_path = trim(regexp_replace(trim(rec.experiment_event_value_parameter), r'\s*\.\s*', '.'), '.');
-      set value_json_path = format_bq_json_path(norm_path);
-      set value_expr = concat("safe_cast(json_value(properties, '", value_json_path, "') as float64)");
+      set val_norm_path = trim(regexp_replace(trim(rec.experiment_event_value_parameter), r'\s*\.\s*', '.'), '.');
+      
+      if regexp_contains(val_norm_path, r'\.') then
+         set val_parent_key = split(val_norm_path, '.')[offset(0)];
+         set val_child_path = substr(val_norm_path, length(val_parent_key) + 2);
+         
+         set val_q_parent = format_bq_json_path(val_parent_key);
+         set val_q_child = format_bq_json_path(val_child_path);
+
+         set value_expr = concat("(select sum(safe_cast(json_value(item, '", val_q_child, "') as float64)) from unnest(json_extract_array(properties, '", val_q_parent, "')) as item)");
+      else
+         set value_json_path = format_bq_json_path(val_norm_path);
+         set value_expr = concat("safe_cast(json_value(properties, '", value_json_path, "') as float64)");
+      end if;
     end if;
 
     -------------------------------------------------------------------------
@@ -304,10 +368,10 @@ begin
         where date(time) between '%s' and '%s'
           and %s and event_name = '%s' %s
       )
-    """, coalesce(rec.scope, 'User'), id_expr, value_expr, events_table, format_date('%Y-%m-%d', rec.date_start), format_date('%Y-%m-%d', rec.date_end), id_predicate, coalesce(rec.conversion_event, ''), conv_filter);
+    """, coalesce(rec.scope, 'User'), id_expr, value_expr, events_table, format_date('%Y-%m-%d', rec.date_start), format_date('%Y-%m-%d', rec.date_end), id_predicate, replace(coalesce(rec.conversion_event, ''), "'", "\\'"), conv_filter);
 
     ----------------------------------------------------------------------------
-    -- (NEW) MIXPANEL FUNNEL CTEs
+    -- Dynamic Mixpanel Funnel CTEs (Dynamic Multi-Filter & Nested Item Arrays)
     ----------------------------------------------------------------------------
     set funnel_cte_sql = '';
     set funnel_select_sql = 'cast(null as string)';
@@ -319,10 +383,11 @@ begin
       set union_string = '';
       set i = 1;
         
-      -- SMART PARAMETER CHECK
+      -- SMART PARAMETER CHECK: Checks both flat and nested filter definitions
       set has_funnel_params = (
         select count(1) > 0 
-        from unnest(json_extract_array(rec.funnel_steps)) as f 
+        from unnest(json_extract_array(rec.funnel_steps)) as step,
+          unnest(coalesce(json_extract_array(step, '$.filters'), [step])) as f 
         where json_value(f, '$.param_key') is not null and trim(json_value(f, '$.param_key')) != ''
       );
         
@@ -334,7 +399,6 @@ begin
 
       -- SMART GROUPING CHECK
       if upper(trim(coalesce(rec.scope, 'User'))) = 'SESSION' then
-        -- NOTE: Enclosed in double quotes, we use escaped inner quotes for the JSON path
         set funnel_grouping = "concat(distinct_id, coalesce(json_value(properties, '$.\"$session_id\"'), ''))";
       else
         set funnel_grouping = id_expr;
@@ -358,24 +422,82 @@ begin
           select grouping_key, exposure_time as t_0
           from exposures_filtered
         )
-      """, funnel_grouping, param_col_sql, rec.funnel_steps);
+      """, funnel_grouping, param_col_sql, replace(rec.funnel_steps, "'", "\\'"));
 
       -- 2. Dynamically Generate the Cascaded Steps
       while i <= num_steps do
         set current_event = json_value(funnel_steps_json[i-1], '$.event');
-        set current_param_key = json_value(funnel_steps_json[i-1], '$.param_key');
-        set current_param_val = json_value(funnel_steps_json[i-1], '$.param_val');
         set explicit_step = coalesce(cast(json_value(funnel_steps_json[i-1], '$.step_number') as int64), i);
-            
-        set param_filter = '';
-        if current_param_key is not null and current_param_val is not null then
-          set clean_json_path = (select format_bq_json_path(current_param_key));
 
-          set param_filter = format("""
-            and regexp_contains(coalesce(json_value(f.properties, '%s'), ''), r'%s')
-          """, clean_json_path, current_param_val);
+        -- Extract the sub-filters array, or fall back to legacy single-filter object
+        set current_filters_json = coalesce(
+          funnel_steps_json[i-1].filters,
+          case 
+            when json_value(funnel_steps_json[i-1], '$.param_key') is not null then
+              parse_json(concat(
+                '[{"param_key":', to_json_string(json_value(funnel_steps_json[i-1], '$.param_key')), 
+                ',"param_val":', to_json_string(json_value(funnel_steps_json[i-1], '$.param_val')), '}]'
+              ))
+            else parse_json('[]')
+          end
+        );
+        set num_sub_filters = coalesce(array_length(json_extract_array(current_filters_json)), 0);
+
+        -- Reset filter string and label for this step
+        set param_filter = '';
+        set current_step_label = current_event;
+        set j = 1;
+
+        -- NESTED LOOP: Iterate over all filters assigned to this step
+        while j <= num_sub_filters do
+          set sub_filter_key = json_value(current_filters_json[j-1], '$.param_key');
+          set sub_filter_val = json_value(current_filters_json[j-1], '$.param_val');
+
+          if sub_filter_key is not null and sub_filter_val is not null and trim(sub_filter_key) != '' then
+            -- Append filter to visual step label: e.g. "Product Added (Items.Category = analytics)"
+            set current_step_label = concat(current_step_label, if(j = 1, ' (', ', '), sub_filter_key, ' = ', sub_filter_val);
+
+            set clean_sub_path = trim(regexp_replace(trim(sub_filter_key), r'\s*\.\s*', '.'), '.');
+
+            -- Detect nested array (dot notation) vs flat property
+            if regexp_contains(clean_sub_path, r'\.') then
+              set sub_parent_key = split(clean_sub_path, '.')[offset(0)];
+              set sub_child_key = substr(clean_sub_path, length(sub_parent_key) + 2);
+
+              set sub_q_parent = format_bq_json_path(sub_parent_key);
+              set sub_q_child = format_bq_json_path(sub_child_key);
+
+              set param_filter = param_filter || format("""
+                and coalesce((
+                  select logical_or(regexp_contains(coalesce(json_value(item, '%s'), ''), r'''%s'''))
+                  from unnest(json_extract_array(f.properties, '%s')) as item
+                ), false)
+              """, 
+                sub_q_child, 
+                replace(replace(sub_filter_val, '%', '%%'), "'''", "\\'\\'\\'"), 
+                sub_q_parent
+              );
+            else
+              set clean_sub_path = format_bq_json_path(clean_sub_path);
+
+              set param_filter = param_filter || format("""
+                and regexp_contains(coalesce(json_value(f.properties, '%s'), ''), r'''%s''')
+              """, 
+                clean_sub_path, 
+                replace(replace(sub_filter_val, '%', '%%'), "'''", "\\'\\'\\'")
+              );
+            end if;
+          end if;
+
+          set j = j + 1;
+        end while;
+
+        -- Close parenthesis on label if filters were applied
+        if num_sub_filters > 0 and current_step_label != current_event then
+          set current_step_label = concat(current_step_label, ')');
         end if;
 
+        -- Cascaded step CTEs
         if i = 1 then
           set funnel_cte_sql = funnel_cte_sql || format("""
             , step_%d as (
@@ -387,9 +509,12 @@ begin
                 %s
               group by 1, 2
             )
-          """, i, i, i-1, current_event, i-1, param_filter);
+          """, i, i, i-1, replace(current_event, "'", "\\'"), i-1, param_filter);
               
-          set union_string = union_string || format("SELECT %d as step_number, '%s' as step_name, count(t_%d) as participants, 0.0 as avg_time, 0.0 as median_time FROM step_%d\n", explicit_step, coalesce(current_param_val, current_event), i, i);
+          set union_string = union_string || format("SELECT %d as step_number, r'''%s''' as step_name, count(t_%d) as participants, 0.0 as avg_time, 0.0 as median_time FROM step_%d\n", 
+            explicit_step, 
+            replace(replace(current_step_label, '%', '%%'), "'''", "\\'\\'\\'"), 
+            i, i);
         else
           set funnel_cte_sql = funnel_cte_sql || format("""
             , step_%d as (
@@ -401,14 +526,18 @@ begin
                 %s
               group by %s
             )
-          """, i, i, i-1, current_event, i-1, param_filter, (select string_agg(cast(x as string), ', ') from unnest(generate_array(1, i+1)) as x));
+          """, i, i, i-1, replace(current_event, "'", "\\'"), i-1, param_filter, (select string_agg(cast(x as string), ', ') from unnest(generate_array(1, i+1)) as x));
               
-          set union_string = union_string || format("UNION ALL\nSELECT %d as step_number, '%s' as step_name, count(t_%d) as participants, coalesce(avg(timestamp_diff(t_%d, t_%d, second)), 0.0) as avg_time, coalesce(approx_quantiles(timestamp_diff(t_%d, t_%d, second), 100)[offset(50)], 0.0) as median_time FROM step_%d\n", explicit_step, coalesce(current_param_val, current_event), i, i, i-1, i, i-1, i);
+          set union_string = union_string || format("UNION ALL\nSELECT %d as step_number, r'''%s''' as step_name, count(t_%d) as participants, coalesce(avg(timestamp_diff(t_%d, t_%d, second)), 0.0) as avg_time, coalesce(approx_quantiles(timestamp_diff(t_%d, t_%d, second), 100)[offset(50)], 0.0) as median_time FROM step_%d\n", 
+            explicit_step, 
+            replace(replace(current_step_label, '%', '%%'), "'''", "\\'\\'\\'"), 
+            i, i, i-1, i, i-1, i);
         end if;
             
         set i = i + 1;
       end while;
 
+      -- 3. Window functions & metrics aggregation
       set funnel_cte_sql = funnel_cte_sql || format("""
         , funnel_union as ( %s )
         , funnel_math as (
@@ -512,7 +641,7 @@ begin
         events_table, format_date('%Y-%m-%d', rec.date_start), format_date('%Y-%m-%d', rec.date_end), id_predicate,
         extracted_variant_expr,
         coalesce(rec.scope, 'User'), id_expr,
-        coalesce(rec.experiment_event_name, ''), exp_filter
+        replace(coalesce(rec.experiment_event_name, ''), "'", "\\'"), exp_filter
       );
     end if;
 
@@ -523,16 +652,19 @@ begin
           from (
             select *, row_number() over (partition by grouping_key order by exposure_time asc) rn
             from exposures_labeled
-            where regexp_contains(variant, r'%s')
+            where regexp_contains(variant, r'''%s''')
           )
           where rn = 1
         ),
         exposures_filtered as (
           select grouping_key, exposure_time
           from exposures_first
-          where regexp_contains(trim(variant_label), r'%s')
+          where regexp_contains(trim(variant_label), r'''%s''')
         )
-      """, replace(test_variants_regex, '%', '%%'), replace(coalesce(rec.exp_variant_string, ''), '%', '%%'));
+      """, 
+        replace(replace(test_variants_regex, '%', '%%'), "'''", "\\'\\'\\'"), 
+        replace(replace(coalesce(rec.exp_variant_string, ''), '%', '%%'), "'''", "\\'\\'\\'")
+      );
       set dyn_sql = sql_header || sql_logic || sql_footer;
 
     elseif upper(trim(coalesce(rec.user_overlap, ''))) = 'LAST EXPOSURE' then
@@ -543,12 +675,12 @@ begin
              variant, 
              row_number() over (partition by grouping_key order by exposure_time desc) as rn
            from exposures_labeled
-           where regexp_contains(variant, r'%s')
+           where regexp_contains(variant, r'''%s''')
         ),
         final_user_variant as (
            select grouping_key, variant
            from exposures_last_ranked
-           where rn = 1 and regexp_contains(trim(variant), r'%s')
+           where rn = 1 and regexp_contains(trim(variant), r'''%s''')
         ),
         exposures_filtered as (
            select e.grouping_key, min(e.exposure_time) as exposure_time
@@ -556,7 +688,10 @@ begin
            join final_user_variant f on e.grouping_key = f.grouping_key and e.variant = f.variant
            group by e.grouping_key
         )
-      """, replace(test_variants_regex, '%', '%%'), replace(coalesce(rec.exp_variant_string, ''), '%', '%%'));
+      """, 
+        replace(replace(test_variants_regex, '%', '%%'), "'''", "\\'\\'\\'"), 
+        replace(replace(coalesce(rec.exp_variant_string, ''), '%', '%%'), "'''", "\\'\\'\\'")
+      );
       set dyn_sql = sql_header || sql_logic || sql_footer;
 
     elseif upper(trim(coalesce(rec.user_overlap, ''))) = 'EXCLUDE' then
@@ -564,7 +699,7 @@ begin
         , user_variant_count as (
           select grouping_key, count(distinct variant) as variant_count
           from exposures_labeled
-          where regexp_contains(variant, r'%s')
+          where regexp_contains(variant, r'''%s''')
           group by grouping_key
         ),
         exposures_by_variant_first as (
@@ -577,9 +712,12 @@ begin
           from exposures_by_variant_first e
           join user_variant_count u using (grouping_key)
           where u.variant_count = 1
-            and regexp_contains(trim(e.variant), r'%s')
+            and regexp_contains(trim(e.variant), r'''%s''')
         )
-      """, replace(test_variants_regex, '%', '%%'), replace(coalesce(rec.exp_variant_string, ''), '%', '%%'));
+      """, 
+        replace(replace(test_variants_regex, '%', '%%'), "'''", "\\'\\'\\'"), 
+        replace(replace(coalesce(rec.exp_variant_string, ''), '%', '%%'), "'''", "\\'\\'\\'")
+      );
       set dyn_sql = sql_header || sql_logic || sql_footer;
 
     elseif upper(trim(coalesce(rec.user_overlap, ''))) = 'CREDIT BOTH' then
@@ -598,14 +736,16 @@ begin
             min(time) as exposure_time
           from all_events
           where event_name = '%s'
-            and regexp_contains(coalesce(safe_cast(%s as string), ''), r'%s')
+            and regexp_contains(coalesce(safe_cast(%s as string), ''), r'''%s''')
             %s
           group by grouping_key
         )
       """,
         events_table, format_date('%Y-%m-%d', rec.date_start), format_date('%Y-%m-%d', rec.date_end), id_predicate,
         coalesce(rec.scope, 'User'), id_expr,
-        coalesce(rec.experiment_event_name, ''), where_variant_expr, replace(coalesce(rec.exp_variant_string, ''), '%', '%%'), exp_filter
+        replace(coalesce(rec.experiment_event_name, ''), "'", "\\'"), where_variant_expr, 
+        replace(replace(coalesce(rec.exp_variant_string, ''), '%', '%%'), "'''", "\\'\\'\\'"), 
+        exp_filter
       );
       set dyn_sql = dyn_sql || sql_footer;
 
@@ -619,9 +759,6 @@ begin
     if dyn_sql is not null and length(dyn_sql) > 0 then
       execute immediate dyn_sql into user_count, conversion_count, total_conversion_value, total_conversion_sq_value, funnel_json_str;
 
-        ----------------------------------------------------------------------------
-        -- Stores 1 row per variant run
-        ----------------------------------------------------------------------------
         if query_info_logging then
           insert into bigquery_ab_analyzer_query_information_buffer (id, job_id, bytes_billed)
           select
@@ -1112,9 +1249,9 @@ begin
           )
         ) as ai
         where dest.id = ai.id;
-
+        
       ----------------------------------------------------------------------------
-      -- (10b) BUFFER THE AI UPDATE COST (BigQuery bytes only)
+      -- (10b) BUFFER THE AI UPDATE COST
       ----------------------------------------------------------------------------
       if query_info_logging then
         insert into bigquery_ab_analyzer_query_information_buffer (id, job_id, bytes_billed)

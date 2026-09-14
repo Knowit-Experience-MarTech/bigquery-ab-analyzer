@@ -1,194 +1,316 @@
 <!DOCTYPE html>
 <html>
-<head>
-  <base target="_top">
-  <style>
-    body { font-family: 'Arial', sans-serif; padding: 15px; color: #333; background-color: #f8f9fa; }
-    h3 { margin-top: 0; font-size: 16px; color: #1a73e8; border-bottom: 2px solid #e8eaed; padding-bottom: 10px;}
-    
-    .step-card { background: #fff; border: 1px solid #dadce0; border-radius: 8px; padding: 12px; margin-bottom: 15px; box-shadow: 0 1px 2px rgba(0,0,0,0.05); }
-    .step-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; font-weight: bold;}
-    
-    .input-group { margin-bottom: 8px; }
-    
-    /* NEW: Flexbox row for side-by-side elements */
-    .flex-row { display: flex; gap: 12px; margin-bottom: 8px; }
-    .flex-row .input-group { flex: 1; margin-bottom: 0; } 
-    
-    label { display: block; font-size: 12px; font-weight: bold; margin-bottom: 4px; color: #5f6368; }
-    input[type="text"], input[type="number"], select { width: 100%; box-sizing: border-box; padding: 6px 8px; border: 1px solid #dadce0; border-radius: 4px; font-size: 13px; }
-    input:disabled, select:disabled { background-color: #f1f3f4; color: #9aa0a6; }
-    
-    .filter-toggle { display: flex; align-items: center; gap: 8px; font-size: 13px; margin: 12px 0 8px 0; }
-    
-    button { cursor: pointer; border: none; border-radius: 4px; font-weight: bold; font-size: 13px; }
-    .btn-remove { background: transparent; color: #d93025; padding: 4px; }
-    .btn-remove:hover { background: #fce8e6; }
-    .btn-add { background: #f1f3f4; color: #1a73e8; width: 100%; padding: 10px; margin-bottom: 20px; border: 1px dashed #1a73e8; }
-    .btn-add:hover { background: #e8f0fe; }
-    .btn-save { background: #1a73e8; color: #fff; width: 100%; padding: 12px; box-shadow: 0 1px 2px rgba(0,0,0,0.1); }
-    .btn-save:hover { background: #1557b0; }
-    .btn-save:disabled { background: #8ab4f8; cursor: not-allowed; }
-  </style>
-</head>
-<body>
+  <head>
+    <base target="_top">
+    <style>
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        margin: 0;
+        padding: 16px;
+        background-color: #f8f9fa;
+        color: #202124;
+      }
+      h2 {
+        margin-top: 0;
+        font-size: 18px;
+        color: #1a73e8;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+      }
+      .step-card {
+        background: #ffffff;
+        border: 1px solid #dadce0;
+        border-radius: 8px;
+        padding: 16px;
+        margin-bottom: 16px;
+        box-shadow: 0 1px 3px rgba(60,64,67, 0.08);
+      }
+      .step-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 12px;
+      }
+      .step-title {
+        font-weight: 600;
+        font-size: 14px;
+        color: #3c4043;
+      }
+      .form-row {
+        display: grid;
+        grid-template-columns: 80px 110px 1fr;
+        gap: 10px;
+        margin-bottom: 12px;
+      }
+      label {
+        font-size: 11px;
+        font-weight: 600;
+        color: #5f6368;
+        margin-bottom: 4px;
+        display: block;
+      }
+      input, select {
+        width: 100%;
+        box-sizing: border-box;
+        padding: 7px 9px;
+        border: 1px solid #dadce0;
+        border-radius: 4px;
+        font-size: 13px;
+        background: #fff;
+      }
+      input:focus, select:focus {
+        border-color: #1a73e8;
+        outline: none;
+      }
+      .filters-section {
+        background: #f1f3f4;
+        border-radius: 6px;
+        padding: 10px 12px;
+        margin-top: 8px;
+      }
+      .filters-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 8px;
+        font-size: 12px;
+        font-weight: 600;
+        color: #3c4043;
+      }
+      .filter-row {
+        display: grid;
+        grid-template-columns: 1fr 1fr 32px;
+        gap: 8px;
+        margin-bottom: 8px;
+        align-items: center;
+      }
+      .btn {
+        cursor: pointer;
+        padding: 6px 12px;
+        border-radius: 4px;
+        font-size: 12px;
+        font-weight: 500;
+        border: 1px solid transparent;
+        transition: 0.15s ease-in-out;
+      }
+      .btn-add-step {
+        background-color: #e8f0fe;
+        color: #1a73e8;
+        border-color: #d2e3fc;
+        width: 100%;
+        padding: 10px;
+        font-size: 13px;
+        margin-bottom: 70px;
+      }
+      .btn-add-step:hover { background-color: #d2e3fc; }
+      .btn-add-filter {
+        background-color: #ffffff;
+        border-color: #dadce0;
+        color: #1a73e8;
+        padding: 3px 8px;
+      }
+      .btn-add-filter:hover { background-color: #f8f9fa; }
+      .btn-icon-del {
+        background: none;
+        border: none;
+        color: #d93025;
+        font-size: 16px;
+        cursor: pointer;
+        padding: 4px;
+        line-height: 1;
+      }
+      .btn-icon-del:hover { background-color: #fce8e6; border-radius: 4px; }
+      .footer-actions {
+        position: fixed;
+        bottom: 0;
+        left: 0;
+        right: 0;
+        background: #fff;
+        padding: 12px 16px;
+        border-top: 1px solid #dadce0;
+        display: flex;
+        justify-content: flex-end;
+        gap: 10px;
+      }
+      .btn-save { background: #1a73e8; color: #fff; font-size: 13px; padding: 8px 16px; }
+      .btn-save:hover { background: #1557b0; }
+      .btn-cancel { background: #fff; border-color: #dadce0; color: #3c4043; font-size: 13px; padding: 8px 16px; }
+    </style>
+  </head>
+  <body>
+    <h2>
+      <span>Funnel Configuration</span>
+      <span style="font-size: 12px; color: #5f6368;">ID: <?= experimentId ?></span>
+    </h2>
 
-  <h3>Experiment: <?= experimentId ?></h3>
-  
-  <div id="editor">
     <div id="steps-container"></div>
-    <button class="btn-add" onclick="addStep()">+ Add Funnel Step</button>
-    <button class="btn-save" id="save-btn" onclick="saveData()">Save Funnel</button>
-  </div>
 
-  <script>
-    const expId = <?!= JSON.stringify(experimentId) ?>;
-    let state = <?!= JSON.stringify(funnelData) ?>;
+    <button type="button" class="btn btn-add-step" onclick="addStep()">+ Add Funnel Step</button>
 
-    window.onload = function() {
-      renderSteps();
-    };
+    <div class="footer-actions">
+      <button type="button" class="btn btn-cancel" onclick="google.script.host.close()">Close</button>
+      <button type="button" class="btn btn-save" id="save-btn" onclick="saveData()">Save Funnel</button>
+    </div>
 
-    function renderSteps() {
-      const container = document.getElementById('steps-container');
-      container.innerHTML = ''; 
+    <script>
+      const initialData = <?!= JSON.stringify(funnelData) ?>;
+      const experimentId = "<?= experimentId ?>";
+      let steps = initialData.steps || [];
+      const eventsList = initialData.events || [];
+      const filterFieldsList = initialData.filterFields || [];
 
-      state.steps.forEach((step, index) => {
-        const card = document.createElement('div');
-        card.className = 'step-card';
-        
-        const variantOptions = ['Both', 'A', 'B'].map(v => `<option value="${v}" ${step.variant === v ? 'selected' : ''}>${v}</option>`).join('');
-        const eventOptions = ['<option value="">-- Select Event --</option>'].concat(state.events.map(e => `<option value="${e}" ${step.eventName === e ? 'selected' : ''}>${e}</option>`)).join('');
-        const fieldOptions = ['<option value="">-- Select Field --</option>'].concat(state.filterFields.map(f => `<option value="${f}" ${step.filterField === f ? 'selected' : ''}>${f}</option>`)).join('');
+      function renderSteps() {
+        const container = document.getElementById("steps-container");
+        container.innerHTML = "";
 
-        card.innerHTML = `
-          <div class="step-header">
-            <span>Step <input type="number" value="${step.stepNum}" onchange="updateStep(${index}, 'stepNum', this.value)" style="width: 50px; display: inline-block; margin-left: 5px;"></span>
-            <button class="btn-remove" onclick="removeStep(${index})">Delete</button>
-          </div>
-          
-          <!-- NEW: Wrapped Variant and Event Name in the flex-row container -->
-          <div class="flex-row">
-            <div class="input-group">
-              <label>Variant</label>
-              <select onchange="updateStep(${index}, 'variant', this.value)">${variantOptions}</select>
+        steps.forEach((step, stepIdx) => {
+          const card = document.createElement("div");
+          card.className = "step-card";
+
+          // Header & Step Deletion
+          let headerHtml = `
+            <div class="step-header">
+              <span class="step-title">Step ${stepIdx + 1}</span>
+              ${steps.length > 1 ? `<button type="button" class="btn-icon-del" onclick="deleteStep(${stepIdx})" title="Delete Step">&times;</button>` : ''}
             </div>
-            
-            <div class="input-group">
-              <label>Event Name</label>
-              <select id="event-select-${index}" onchange="updateStep(${index}, 'eventName', this.value)">${eventOptions}</select>
+          `;
+
+          // Event & Scope Dropdowns
+          let eventsOptions = eventsList.map(e => `<option value="${e}" ${e === step.eventName ? 'selected' : ''}>${e}</option>`).join('');
+          let bodyHtml = `
+            <div class="form-row">
+              <div>
+                <label>Step #</label>
+                <input type="number" min="1" value="${step.stepNum || (stepIdx + 1)}" onchange="updateStepField(${stepIdx}, 'stepNum', this.value)" />
+              </div>
+              <div>
+                <label>Variant</label>
+                <select onchange="updateStepField(${stepIdx}, 'variant', this.value)">
+                  <option value="Both" ${step.variant === 'Both' ? 'selected' : ''}>Both</option>
+                  <option value="A" ${step.variant === 'A' ? 'selected' : ''}>Variant A</option>
+                  <option value="B" ${step.variant === 'B' ? 'selected' : ''}>Variant B</option>
+                </select>
+              </div>
+              <div>
+                <label>Event Name</label>
+                <select onchange="updateStepField(${stepIdx}, 'eventName', this.value)">
+                  <option value="">-- Select Event --</option>
+                  ${eventsOptions}
+                </select>
+              </div>
             </div>
-          </div>
+          `;
 
-          <div class="filter-toggle">
-            <input type="checkbox" id="chk-${index}" ${step.filterOn ? 'checked' : ''} onchange="toggleFilter(${index}, this.checked)">
-            <label for="chk-${index}" style="margin:0; cursor:pointer;">Apply Event Filter</label>
-          </div>
+          // Filters Section (Multi-Filter)
+          let filtersHtml = `
+            <div class="filters-section">
+              <div class="filters-header">
+                <span>Filters (Event Params / Items)</span>
+                <button type="button" class="btn btn-add-filter" onclick="addFilter(${stepIdx})">+ Add Filter</button>
+              </div>
+              <div id="filters-container-${stepIdx}">
+          `;
 
-          <div id="filter-group-${index}" style="display: ${step.filterOn ? 'block' : 'none'};">
-            <div class="input-group">
-              <label>Filter Field</label>
-              <select id="filter-select-${index}" onchange="updateStep(${index}, 'filterField', this.value)">${fieldOptions}</select>
-            </div>
-            <div class="input-group">
-              <label>Filter Value (RegEx Contains)</label>
-              <input type="text" value="${step.filterValue || ''}" onchange="updateStep(${index}, 'filterValue', this.value)" placeholder="e.g. /checkout$">
-            </div>
-          </div>
-        `;
-        container.appendChild(card);
-      });
-    }
+          if (!step.filters || step.filters.length === 0) {
+            filtersHtml += `<div style="font-size: 11px; color: #80868b; font-style: italic; padding: 4px 0;">No filters applied to this step.</div>`;
+          } else {
+            step.filters.forEach((f, fIdx) => {
+              let fieldOptions = filterFieldsList.map(field => 
+                `<option value="${field}" ${field === f.param_key ? 'selected' : ''}>${field}</option>`
+              ).join('');
 
-    function updateStep(index, key, value) {
-      state.steps[index][key] = value;
-    }
-
-    function toggleFilter(index, isChecked) {
-      state.steps[index].filterOn = isChecked;
-      if (!isChecked) {
-        state.steps[index].filterField = "";
-        state.steps[index].filterValue = "";
-      }
-      renderSteps(); 
-    }
-
-    function addStep() {
-      const maxStep = state.steps.reduce((max, step) => Math.max(max, parseInt(step.stepNum) || 0), 0);
-      state.steps.push({
-        stepNum: maxStep + 1,
-        variant: "Both",
-        eventName: "",
-        filterOn: false,
-        filterField: "",
-        filterValue: ""
-      });
-      renderSteps();
-    }
-
-    function removeStep(index) {
-      state.steps.splice(index, 1);
-      renderSteps();
-    }
-
-    function saveData() {
-      let isValid = true;
-      let errorMessages = [];
-
-      // 1. Validate all steps before saving
-      state.steps.forEach((step, index) => {
-        const eventDropdown = document.getElementById(`event-select-${index}`);
-        const filterDropdown = document.getElementById(`filter-select-${index}`);
-        
-        // Reset styles to default first
-        if (eventDropdown) {
-          eventDropdown.style.borderColor = "#dadce0";
-          eventDropdown.style.backgroundColor = "#fff";
-        }
-        if (filterDropdown) {
-          filterDropdown.style.borderColor = "#dadce0";
-          filterDropdown.style.backgroundColor = "#fff";
-        }
-
-        // Check 1: Missing Event Name
-        if (!step.eventName || step.eventName.trim() === "") {
-          isValid = false;
-          errorMessages.push(`Step ${step.stepNum}: Missing Event Name`);
-          if (eventDropdown) {
-            eventDropdown.style.borderColor = "#d93025"; 
-            eventDropdown.style.backgroundColor = "#fce8e6"; 
+              filtersHtml += `
+                <div class="filter-row">
+                  <div>
+                    <select onchange="updateFilterField(${stepIdx}, ${fIdx}, 'param_key', this.value)">
+                      <option value="">-- Field --</option>
+                      ${fieldOptions}
+                    </select>
+                  </div>
+                  <div>
+                    <input type="text" placeholder="Regex / Value (e.g. ^/checkout)" value="${escapeHtml(f.param_val || '')}" onchange="updateFilterField(${stepIdx}, ${fIdx}, 'param_val', this.value)" />
+                  </div>
+                  <button type="button" class="btn-icon-del" onclick="deleteFilter(${stepIdx}, ${fIdx})" title="Remove Filter">&times;</button>
+                </div>
+              `;
+            });
           }
-        }
 
-        // Check 2: Filter is checked, but no Filter Field is selected
-        if (step.filterOn && (!step.filterField || step.filterField.trim() === "")) {
-          isValid = false;
-          errorMessages.push(`Step ${step.stepNum}: Missing Filter Field`);
-          if (filterDropdown) {
-            filterDropdown.style.borderColor = "#d93025"; 
-            filterDropdown.style.backgroundColor = "#fce8e6"; 
-          }
-        }
-      });
+          filtersHtml += `</div></div>`;
 
-      // 2. Stop the save if validation failed and show exactly what broke
-      if (!isValid) {
-        alert("Hold up! Please fix the following errors:\n\n" + errorMessages.join("\n"));
-        return; 
+          card.innerHTML = headerHtml + bodyHtml + filtersHtml;
+          container.appendChild(card);
+        });
       }
 
-      // 3. Proceed with saving if everything is valid
-      const btn = document.getElementById('save-btn');
-      btn.disabled = true;
-      btn.innerText = "Saving...";
+      function addStep() {
+        steps.push({
+          stepNum: steps.length + 1,
+          variant: "Both",
+          eventName: "",
+          filters: []
+        });
+        renderSteps();
+      }
 
-      google.script.run
-        .withSuccessHandler(function() {
-          btn.innerText = "Saved!";
-          setTimeout(() => { btn.innerText = "Save Funnel"; btn.disabled = false; }, 2000);
+      function deleteStep(stepIdx) {
+        steps.splice(stepIdx, 1);
+        renderSteps();
+      }
+
+      function updateStepField(stepIdx, field, val) {
+        steps[stepIdx][field] = val;
+      }
+
+      function addFilter(stepIdx) {
+        if (!steps[stepIdx].filters) steps[stepIdx].filters = [];
+        steps[stepIdx].filters.push({ param_key: "", param_val: "" });
+        renderSteps();
+      }
+
+      function deleteFilter(stepIdx, fIdx) {
+        steps[stepIdx].filters.splice(fIdx, 1);
+        renderSteps();
+      }
+
+      function updateFilterField(stepIdx, fIdx, field, val) {
+        steps[stepIdx].filters[fIdx][field] = val;
+      }
+
+      function escapeHtml(str) {
+        return String(str)
+          .replace(/&/g, "&amp;")
+          .replace(/"/g, "&quot;")
+          .replace(/'/g, "&#39;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;");
+      }
+
+      function saveData() {
+        const btn = document.getElementById('save-btn');
+        btn.disabled = true;
+        btn.innerText = "Saving...";
+
+        const validSteps = steps.filter(s => s.eventName && s.eventName.trim() !== "");
+
+        google.script.run
+          .withSuccessHandler(function() {
+            btn.innerText = "Saved!";
+            setTimeout(() => {
+              btn.innerText = "Save Funnel";
+              btn.disabled = false;
+            }, 2000);
         })
-        .saveFunnelModalData(expId, state.steps);
-    }
-  </script>
-</body>
+        .withFailureHandler(function(err) {
+          alert("Error saving: " + err);
+          btn.innerText = "Save Funnel";
+          btn.disabled = false;
+    })
+    .saveFunnelModalData(experimentId, validSteps);
+}
+
+      window.onload = renderSteps;
+    </script>
+  </body>
 </html>

@@ -5,42 +5,42 @@
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- * https://www.apache.org/licenses/LICENSE-2.0
+ *     https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "as IS" BASIS,
+ * distributed under the License is distributed on an "AS IS" BASIS,
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
 
- ----------------------------------------------------------------------------
-  -- Replace "your_project" with your project
-  -- Replace "superform_outputs_XXX" with your data set
+----------------------------------------------------------------------------
+ -- Replace "your_project" with your project
+ -- Replace "superform_outputs_XXX" with your data set
 
-  -- CHECK REGION: Replace 'region-eu' with 'region-us' if your data is in USA
+ -- CHECK REGION: Replace 'region-eu' with 'region-us' if your data is in USA
 ----------------------------------------------------------------------------
 
 begin
 
   ----------------------------------------------------------------------------
-  -- (0) Configuration & Variables
+  -- (0) Declare top-level variables
   ----------------------------------------------------------------------------
-  declare events_table_name       string  default 'ga4_events'; 
+  declare events_table_name         string  default 'ga4_events'; 
 
-  declare user_count              int64   default 0;
-  declare conversion_count        int64   default 0;
-  declare total_conversion_value  float64 default 0.0;
+  declare user_count                int64   default 0;
+  declare conversion_count          int64   default 0;
+  declare total_conversion_value    float64 default 0.0;
   declare total_conversion_sq_value float64 default 0.0;
-  declare dyn_sql                 string  default "";
-  declare exp_filter              string  default "";
-  declare conv_filter             string  default "";
-  declare id_expr                 string  default 'user_pseudo_id';
-  declare id_predicate            string  default 'user_pseudo_id IS NOT NULL';
-  declare id_filter               string  default '';
-  declare conv_side_sql           string;
-  declare value_expr              string  default 'null';
-  
+  declare dyn_sql                   string  default "";
+  declare exp_filter                string  default "";
+  declare conv_filter               string  default "";
+  declare id_expr                   string  default 'user_pseudo_id';
+  declare id_predicate              string  default 'user_pseudo_id IS NOT NULL';
+  declare id_filter                 string  default '';
+  declare conv_side_sql             string;
+  declare value_expr                string  default 'null';
+
   -- Funnel Add-on Variables
   declare funnel_json_str string default null;
   declare funnel_cte_sql string;
@@ -51,28 +51,38 @@ begin
   declare current_param_key string;
   declare current_param_val string;
   declare param_filter string;
-  declare param_path string;
   declare union_string string;
   declare i int64;
   declare explicit_step int64;
   declare has_funnel_params bool;
   declare param_col_sql string;
   declare funnel_grouping string;
+  declare current_step_label string;
+  declare has_funnel_items bool default false;
+  declare is_item_scope bool default false;
+  declare clean_param_field string default '';
+  declare j int64;
+  declare num_sub_filters int64;
+  declare current_filters_json json;
+  declare sub_filter_key string;
+  declare sub_filter_val string;
+  declare is_sub_item bool;
+  declare clean_sub_field string;
+
+  declare sql_header                string;
+  declare sql_logic                 string;
+  declare sql_footer                string;
+
+  declare query_info_logging        bool default false;
+  declare query_price_per_tib       float64;
   
-  declare sql_header string;
-  declare sql_logic  string;
-  declare sql_footer string;
+  declare ai_summary_activated      bool default false; 
+  declare ai_prompt                 string default '';
 
-  declare exposure_guard          string  default '';
-  declare variant_key             string  default '';
-  declare variant_col_path        string  default '';
-  declare test_variants_regex     string  default '';
-
-  declare query_info_logging      bool default false;
-  declare query_price_per_tib     float64;
-
-  declare ai_summary_activated    bool default false; 
-  declare ai_prompt               string default '';
+  declare exposure_guard            string  default '';
+  declare variant_key               string  default '';
+  declare variant_col_path          string  default '';
+  declare test_variants_regex       string  default '';
 
   -- Validates if GA4Dataform data exists
   declare is_ga4_dataform bool default (
@@ -84,7 +94,7 @@ begin
     )
   );
 
-  if is_ga4_dataform then -- It's a GA4Dataform query, run the query.
+  if is_ga4_dataform then
 
     set (
       query_info_logging,
@@ -116,11 +126,9 @@ begin
       );
     end if;
 
-  ----------------------------------------------------------------------------
-  -- (1) Create TEMP table for results
-  ----------------------------------------------------------------------------
-
-    -- 1. Create a temporary buffer to hold costs while looping
+    ----------------------------------------------------------------------------
+    -- (2) Create TEMP tables for final results
+    ----------------------------------------------------------------------------
     if query_info_logging then
       create or replace temp table bigquery_ab_analyzer_query_information_buffer (
         id string,
@@ -145,15 +153,34 @@ begin
     );
 
     ----------------------------------------------------------------------------
-    -- (2) Main Loop: Process valid experiments for "GA4DATAFORM"
+    -- (3) Loop over each experiment–variant row from the experiments table
     ----------------------------------------------------------------------------
     for rec in (
-      select * from `your_project.bigquery_ab_analyzer.experiments`
+      select
+        id,
+        variant,
+        variant_name,
+        date_start,
+        date_end,
+        experiment_event_name,
+        experiment_variant_parameter,
+        exp_variant_string,
+        conversion_event,
+        scope,
+        identity_source,
+        user_overlap,
+        experiment_event_value_parameter,
+        conversion_count_all,
+        analyze_funnel,
+        funnel_steps
+      from `your_project.bigquery_ab_analyzer.experiments`
       where analyze_test = true 
         and analytics_tool = 'GA4DATAFORM' 
     ) do
 
-      -- 2a) Identity expression / predicate / guard
+      ----------------------------------------------------------------------------
+      -- (4) Build conditions that do not depend on the filters table
+      ----------------------------------------------------------------------------
       if rec.scope = "User" then
         if rec.identity_source = "USER_ID_ONLY" then
           set id_expr = "user_id";
@@ -163,12 +190,11 @@ begin
           set id_expr = "coalesce(nullif(user_id, ''), user_pseudo_id)";
           set id_predicate = "(user_id is not null and user_id != '' OR user_pseudo_id is not null)";
           set id_filter = "";
-        -- Extracts the custom A/B test identifier from the event_params_custom struct
         elseif rec.identity_source = "EXP_DEVICE_ID" then
           set id_expr = "safe_cast(event_params_custom.exp_device_id as string)";
           set id_predicate = "event_params_custom.exp_device_id is not null and safe_cast(event_params_custom.exp_device_id as string) != ''";
           set id_filter = ""; 
-        else 
+        else  -- DEVICE_ID
           set id_expr = "user_pseudo_id";
           set id_predicate = "user_pseudo_id is not null";
           set id_filter = "";
@@ -182,13 +208,14 @@ begin
 
       set exp_filter = "";
       set conv_filter = "";
+
       set test_variants_regex = coalesce((
         select string_agg(concat('(', coalesce(exp_variant_string, ''), ')'), '|')
         from `your_project.bigquery_ab_analyzer.experiments` 
         where id = rec.id and analyze_test = true and analytics_tool = 'GA4DATAFORM'
       ), '.*');
 
-      -- 2b) Exposure Logic
+      -- Exposure Logic
       set variant_key = rec.experiment_variant_parameter;
     
       if strpos(variant_key, '.') = 0 then
@@ -197,43 +224,67 @@ begin
         set variant_col_path = variant_key;
       end if;
 
-      set exposure_guard = format(" and event_name = '%s'", rec.experiment_event_name);
+      set exposure_guard = concat(
+        " and event_name = '", replace(rec.experiment_event_name, "'", "\\'"), "'"
+      );
 
-      -- 2c) Filters Logic
+      ----------------------------------------------------------------------------
+      -- (3b) Gather filters for this (id, variant)
+      ----------------------------------------------------------------------------
       for f in (
-        select * from `your_project.bigquery_ab_analyzer.experiments_filters`
-        where id = rec.id and variant = rec.variant
+        select
+          filter_type,
+          filter_on_value,
+          filter_field,
+          filter_value,
+          filter_scope
+        from `your_project.bigquery_ab_analyzer.experiments_filters`
+        where id = rec.id
+          and variant = rec.variant
       ) do
         begin
           declare is_exclude bool default upper(f.filter_type) = 'EXCLUDE';
+          declare safe_filter_val string default replace(replace(f.filter_value, r'\\', r'\\\\'), r"'", r"\'");
+          declare norm_path string default regexp_replace(
+            regexp_replace(trim(f.filter_field), r'\s*\.\s*', '.'),
+            r'\s+', '.'
+          );
           declare check_sql string;
-          declare full_field_path string;
 
           if f.filter_scope in ("Event", "Column") then
             
-            -- Check if we are dealing with the nested items array
-            if regexp_contains(f.filter_field, r'^items\.') then
-              -- Sub-query logic for REPEATED RECORD
+            -- Nested items array check
+            if regexp_contains(norm_path, r'^items[.]') then
               set check_sql = format("""
                 exists (
                   select 1 from unnest(items) it 
-                  where regexp_contains(safe_cast(%s as string), r'%s')
+                  where regexp_contains(coalesce(cast(%s as string), ''), r'''%s''')
                 )
-              """, regexp_replace(f.filter_field, r'^items\.', 'it.'), f.filter_value);
+              """, regexp_replace(norm_path, r'^items[.]', 'it.'), safe_filter_val);
               
             else
               -- Standard pathing for flat columns or event_params
-              if strpos(f.filter_field, '.') = 0 then
-                 set full_field_path = format("event_params.%s", f.filter_field);
-              else
-                 set full_field_path = f.filter_field;
+              if strpos(norm_path, '.') = 0 then
+                set norm_path = format("event_params.%s", norm_path);
               end if;
 
-              set check_sql = format("regexp_contains(safe_cast(%s as string), r'%s')", 
-                                     full_field_path, f.filter_value);
+              set check_sql = format("regexp_contains(coalesce(cast(%s as string), ''), r'''%s''')", 
+                                     norm_path, safe_filter_val);
             end if;
 
-            -- Append to the global filters for this variant
+            if f.filter_on_value in ("Experiment Event", "Both") then
+              set exp_filter = exp_filter || format(" and %s %s", if(is_exclude, "NOT", ""), check_sql);
+            end if;
+
+            if f.filter_on_value in ("Conversion Event", "Both") then
+              set conv_filter = conv_filter || format(" and %s %s", if(is_exclude, "NOT", ""), check_sql);
+            end if;
+
+          elseif f.filter_scope = "User" then
+            -- Fallback for root columns or direct user attributes
+            set check_sql = format("regexp_contains(coalesce(cast(%s as string), ''), r'''%s''')", 
+                                   norm_path, safe_filter_val);
+
             if f.filter_on_value in ("Experiment Event", "Both") then
               set exp_filter = exp_filter || format(" and %s %s", if(is_exclude, "NOT", ""), check_sql);
             end if;
@@ -245,148 +296,235 @@ begin
         end;
       end for;
 
-    set exp_filter = exp_filter || id_filter;
-    set conv_filter = conv_filter || id_filter;
+      set exp_filter = exp_filter || id_filter;
+      set conv_filter = conv_filter || id_filter;
 
-    -- 2d) Value Expression
-    if starts_with(lower(rec.experiment_event_value_parameter), 'ecommerce.') then
-        set value_expr = format("safe_cast(%s as float64)", rec.experiment_event_value_parameter);
-    else
+      -- Value Expression
+      if rec.experiment_event_value_parameter is null
+        or trim(rec.experiment_event_value_parameter) = '' then
+        set value_expr = 'null';
+
+      elseif starts_with(lower(rec.experiment_event_value_parameter), 'ecommerce.') then
+        set value_expr = concat('safe_cast(', rec.experiment_event_value_parameter, ' as float64)');
+
+      else
         if strpos(rec.experiment_event_value_parameter, '.') = 0 then
-           set value_expr = format("safe_cast(event_params.%s as float64)", rec.experiment_event_value_parameter);
+          set value_expr = concat('safe_cast(event_params.', rec.experiment_event_value_parameter, ' as float64)');
         else
-           set value_expr = format("safe_cast(%s as float64)", rec.experiment_event_value_parameter);
+          set value_expr = concat('safe_cast(', rec.experiment_event_value_parameter, ' as float64)');
         end if;
-    end if;
-
-    -- 2e) Build Conversion Side CTE
-    set conv_side_sql = format("""
-      , conv_side as (
-        select
-          case when upper(trim('%s')) = 'USER' then %s
-            else concat(user_pseudo_id, cast(event_params.ga_session_id as string))
-          end as grouping_key,
-          timestamp_micros(time.event_timestamp) as conv_time,
-          %s as conv_value
-        from all_events
-        where event_date between '%s' and '%s'
-          and event_name = '%s'
-          %s
-      )
-    """, coalesce(rec.scope, 'User'), id_expr, value_expr, 
-         format_date('%Y-%m-%d', rec.date_start), format_date('%Y-%m-%d', rec.date_end),
-         coalesce(rec.conversion_event, ''), conv_filter);
-
-    ----------------------------------------------------------------------------
-    -- 2f) DATAFORM FUNNEL CTEs
-    ----------------------------------------------------------------------------
-    set funnel_cte_sql = '';
-    set funnel_select_sql = 'cast(null as string)';
-      
-    if coalesce(rec.analyze_funnel, false) = true and coalesce(rec.funnel_steps, '') != '' then
-        
-      set funnel_steps_json = parse_json(rec.funnel_steps);
-      set num_steps = array_length(json_extract_array(rec.funnel_steps));
-      set union_string = '';
-      set i = 1;
-        
-      -- SMART PARAMETER CHECK
-      set has_funnel_params = (
-        select count(1) > 0 
-        from unnest(json_extract_array(rec.funnel_steps)) as f 
-        where json_value(f, '$.param_key') is not null and trim(json_value(f, '$.param_key')) != ''
-      );
-        
-      if has_funnel_params then
-        set param_col_sql = ', event_params';
-      else
-        set param_col_sql = '';
       end if;
 
-      -- SMART GROUPING CHECK
-      if upper(trim(coalesce(rec.scope, 'User'))) = 'SESSION' then
-        set funnel_grouping = "concat(user_pseudo_id, cast(event_params.ga_session_id as string))";
-      else
-        set funnel_grouping = id_expr;
-      end if;
-          
-      -- 1. Base Funnel CTE (Note Dataform time.event_timestamp and event_date)
-      set funnel_cte_sql = format("""
-        , funnel_base as (
+      ----------------------------------------------------------------------------
+      -- (4e) Build the conversion-side CTE
+      ----------------------------------------------------------------------------
+      set conv_side_sql = format("""
+        , conv_side as (
           select
-            %s as grouping_key,
-            event_name,
-            timestamp_micros(time.event_timestamp) as event_time
-            %s
+            case when upper(trim('%s')) = 'USER' then %s
+              else concat(user_pseudo_id, cast(event_params.ga_session_id as string))
+            end as grouping_key,
+            timestamp_micros(time.event_timestamp) as conv_time,
+            %s as conv_value
           from all_events
           where event_date between '%s' and '%s'
-            and event_name in (
-            select distinct json_value(step, '$.event') 
-            from unnest(json_extract_array('%s')) as step
-          )
+            and event_name = '%s'
+            %s
         )
-        , step_0 as (
-          select grouping_key, exposure_time as t_0
-          from exposures_filtered
-        )
-      """, funnel_grouping, param_col_sql, format_date('%Y-%m-%d', rec.date_start), format_date('%Y-%m-%d', rec.date_end), rec.funnel_steps);
+      """, 
+        coalesce(rec.scope, 'User'), 
+        id_expr, 
+        value_expr, 
+        format_date('%Y-%m-%d', rec.date_start), 
+        format_date('%Y-%m-%d', rec.date_end), 
+        replace(coalesce(rec.conversion_event, ''), "'", "\\'"), 
+        conv_filter
+      );
 
-      -- 2. Dynamically Generate the Cascaded Steps
-      while i <= num_steps do
-        set current_event = json_value(funnel_steps_json[i-1], '$.event');
-        set current_param_key = json_value(funnel_steps_json[i-1], '$.param_key');
-        set current_param_val = json_value(funnel_steps_json[i-1], '$.param_val');
-        set explicit_step = coalesce(cast(json_value(funnel_steps_json[i-1], '$.step_number') as int64), i);
-            
-        set param_filter = '';
-        if current_param_key is not null and current_param_val is not null then
+      ----------------------------------------------------------------------------
+      -- Dynamic Funnel CTEs (Fully Aligned with GA4 Logic)
+      ----------------------------------------------------------------------------
+      set funnel_cte_sql = '';
+      set funnel_select_sql = 'cast(null as string)';
+      
+      if coalesce(rec.analyze_funnel, false) = true and coalesce(rec.funnel_steps, '') != '' then
+        
+        set funnel_steps_json = parse_json(rec.funnel_steps);
+        set num_steps = array_length(json_extract_array(rec.funnel_steps));
+        set union_string = '';
+        set i = 1;
+        
+        -- Carry event_params, items, or both only when needed
+        set has_funnel_params = (
+          select count(1) > 0 
+          from unnest(json_extract_array(rec.funnel_steps)) as step,
+            unnest(coalesce(json_extract_array(step, '$.filters'), [step])) as f
+          where json_value(f, '$.param_key') is not null 
+            and trim(json_value(f, '$.param_key')) != ''
+            and not regexp_contains(lower(trim(json_value(f, '$.param_key'))), r'^(items\.|item_id$|item_name$|item_brand$|item_category[2-5]?$|item_variant$|affiliation$|coupon$|discount$|price$|quantity$)')
+        );
+
+        set has_funnel_items = (
+          select count(1) > 0 
+          from unnest(json_extract_array(rec.funnel_steps)) as step,
+            unnest(coalesce(json_extract_array(step, '$.filters'), [step])) as f
+          where json_value(f, '$.param_key') is not null 
+            and trim(json_value(f, '$.param_key')) != ''
+            and regexp_contains(lower(trim(json_value(f, '$.param_key'))), r'^(items\.|item_id$|item_name$|item_brand$|item_category[2-5]?$|item_variant$|affiliation$|coupon$|discount$|price$|quantity$)')
+        );
+
+        set param_col_sql = concat(
+          case when has_funnel_params then ', event_params' else '' end,
+          case when has_funnel_items then ', items' else '' end
+        );
+
+        if upper(trim(coalesce(rec.scope, 'User'))) = 'SESSION' then
+          set funnel_grouping = "concat(user_pseudo_id, cast(event_params.ga_session_id as string))";
+        else
+          set funnel_grouping = id_expr;
+        end if;
           
-          -- Dataform format dot-pathing check
-          if strpos(current_param_key, '.') = 0 then
-             set param_path = format("f.event_params.%s", current_param_key);
-          else
-             set param_path = format("f.%s", current_param_key);
+        -- 1. Base Funnel CTE
+        set funnel_cte_sql = format("""
+          , funnel_base as (
+            select
+              %s as grouping_key,
+              event_name,
+              timestamp_micros(time.event_timestamp) as event_time
+              %s
+            from all_events
+            where event_date between '%s' and '%s'
+              and event_name in (%s)
+          )
+          , step_0 as (
+            select grouping_key, exposure_time as t_0
+            from exposures_filtered
+          )
+        """, 
+        funnel_grouping, 
+        param_col_sql, 
+        format_date('%Y-%m-%d', rec.date_start), 
+        format_date('%Y-%m-%d', rec.date_end), 
+        (
+          select string_agg(distinct concat("'", replace(json_value(step, '$.event'), "'", "\\'"), "'"), ', ')
+          from unnest(json_extract_array(rec.funnel_steps)) as step
+        ));
+        
+        -- 2. Dynamically Generate the Cascaded Steps
+        while i <= num_steps do
+          set current_event = json_value(funnel_steps_json[i-1], '$.event');
+          set explicit_step = coalesce(cast(json_value(funnel_steps_json[i-1], '$.step_number') as int64), i);
+
+          -- Extract the sub-filters array, or fall back to legacy single-filter object if present
+          set current_filters_json = coalesce(
+            funnel_steps_json[i-1].filters,
+            case 
+              when json_value(funnel_steps_json[i-1], '$.param_key') is not null then
+                parse_json(concat(
+                  '[{"param_key":', to_json_string(json_value(funnel_steps_json[i-1], '$.param_key')), 
+                  ',"param_val":', to_json_string(json_value(funnel_steps_json[i-1], '$.param_val')), '}]'
+                ))
+              else parse_json('[]')
+            end
+          );
+          set num_sub_filters = coalesce(array_length(json_extract_array(current_filters_json)), 0);
+
+          -- Reset filter string and label for this step
+          set param_filter = '';
+          set current_step_label = current_event;
+          set j = 1;
+
+          -- NESTED LOOP: Iterate over all filters assigned to this step
+          while j <= num_sub_filters do
+            set sub_filter_key = json_value(current_filters_json[j-1], '$.param_key');
+            set sub_filter_val = json_value(current_filters_json[j-1], '$.param_val');
+
+            if sub_filter_key is not null and sub_filter_val is not null and trim(sub_filter_key) != '' then
+              -- Append each filter to the label: e.g. "purchase (page_path_clean = ^/, item_category = Shoes)"
+              set current_step_label = concat(current_step_label, if(j = 1, ' (', ', '), sub_filter_key, ' = ', sub_filter_val);
+
+              -- Check whether this specific filter targets an item-level column
+              set clean_sub_field = trim(sub_filter_key);
+              set is_sub_item = regexp_contains(
+                lower(clean_sub_field), 
+                r'^(items\.|item_id$|item_name$|item_brand$|item_category[2-5]?$|item_variant$|affiliation$|coupon$|discount$|price$|quantity$)'
+              );
+
+              if is_sub_item then
+                set clean_sub_field = regexp_replace(clean_sub_field, r'^items?\.', '');
+                set param_filter = param_filter || format("""
+                  and coalesce((
+                    select logical_or(regexp_contains(coalesce(cast(it.%s as string), ''), r'''%s'''))
+                    from unnest(f.items) it
+                  ), false)
+                """, 
+                  replace(clean_sub_field, "'", "\\'"), 
+                  replace(replace(sub_filter_val, '%', '%%'), "'''", "\\'\\'\\'")
+                );
+              else
+                if strpos(clean_sub_field, '.') = 0 then
+                  set clean_sub_field = format("event_params.%s", clean_sub_field);
+                end if;
+
+                set param_filter = param_filter || format("""
+                  and regexp_contains(coalesce(cast(f.%s as string), ''), r'''%s''')
+                """, 
+                  replace(clean_sub_field, "'", "\\'"), 
+                  replace(replace(sub_filter_val, '%', '%%'), "'''", "\\'\\'\\'")
+                );
+              end if;
+            end if;
+
+            set j = j + 1;
+          end while;
+
+          -- Close parenthesis on label if filters were added
+          if num_sub_filters > 0 and current_step_label != current_event then
+            set current_step_label = concat(current_step_label, ')');
           end if;
 
-          set param_filter = format("""
-            and regexp_contains(safe_cast(%s as string), r'%s')
-          """, param_path, current_param_val);
-        end if;
-
-        if i = 1 then
-          set funnel_cte_sql = funnel_cte_sql || format("""
-            , step_%d as (
-              select s.grouping_key, s.t_0, min(f.event_time) as t_%d
-              from step_%d s
-              left join funnel_base f on s.grouping_key = f.grouping_key 
-                and f.event_name = '%s' 
-                and f.event_time >= s.t_%d
-                %s
-              group by 1, 2
-            )
-          """, i, i, i-1, current_event, i-1, param_filter);
+          -- Build Step CTEs using the concatenated param_filter and dynamic current_step_label
+          if i = 1 then
+            set funnel_cte_sql = funnel_cte_sql || format("""
+              , step_%d as (
+                select s.grouping_key, s.t_0, min(f.event_time) as t_%d
+                from step_%d s
+                left join funnel_base f on s.grouping_key = f.grouping_key 
+                  and f.event_name = '%s' 
+                  and f.event_time >= s.t_%d
+                  %s
+                group by 1, 2
+              )
+            """, i, i, i-1, replace(current_event, "'", "\\'"), i-1, param_filter);
+                
+            set union_string = union_string || format("SELECT %d as step_number, r'''%s''' as step_name, count(t_%d) as participants, 0.0 as avg_time, 0.0 as median_time FROM step_%d\n", 
+              explicit_step, 
+              replace(replace(current_step_label, '%', '%%'), "'''", "\\'\\'\\'"), 
+              i, i);
+          else
+            set funnel_cte_sql = funnel_cte_sql || format("""
+              , step_%d as (
+                select s.*, min(f.event_time) as t_%d
+                from step_%d s
+                left join funnel_base f on s.grouping_key = f.grouping_key 
+                  and f.event_name = '%s' 
+                  and f.event_time > s.t_%d
+                  %s
+                group by %s
+              )
+            """, i, i, i-1, replace(current_event, "'", "\\'"), i-1, param_filter, (select string_agg(cast(x as string), ', ') from unnest(generate_array(1, i+1)) as x));
+                
+            set union_string = union_string || format("UNION ALL\nSELECT %d as step_number, r'''%s''' as step_name, count(t_%d) as participants, coalesce(avg(timestamp_diff(t_%d, t_%d, second)), 0.0) as avg_time, coalesce(approx_quantiles(timestamp_diff(t_%d, t_%d, second), 100)[offset(50)], 0.0) as median_time FROM step_%d\n", 
+              explicit_step, 
+              replace(replace(current_step_label, '%', '%%'), "'''", "\\'\\'\\'"), 
+              i, i, i-1, i, i-1, i);
+          end if;
               
-          set union_string = union_string || format("SELECT %d as step_number, '%s' as step_name, count(t_%d) as participants, 0.0 as avg_time, 0.0 as median_time FROM step_%d\n", explicit_step, coalesce(current_param_val, current_event), i, i);
-        else
-          set funnel_cte_sql = funnel_cte_sql || format("""
-            , step_%d as (
-              select s.*, min(f.event_time) as t_%d
-              from step_%d s
-              left join funnel_base f on s.grouping_key = f.grouping_key 
-                and f.event_name = '%s' 
-                and f.event_time > s.t_%d
-                %s
-              group by %s
-            )
-          """, i, i, i-1, current_event, i-1, param_filter, (select string_agg(cast(x as string), ', ') from unnest(generate_array(1, i+1)) as x));
-              
-          set union_string = union_string || format("UNION ALL\nSELECT %d as step_number, '%s' as step_name, count(t_%d) as participants, coalesce(avg(timestamp_diff(t_%d, t_%d, second)), 0.0) as avg_time, coalesce(approx_quantiles(timestamp_diff(t_%d, t_%d, second), 100)[offset(50)], 0.0) as median_time FROM step_%d\n", explicit_step, coalesce(current_param_val, current_event), i, i, i-1, i, i-1, i);
-        end if;
-            
-        set i = i + 1;
-      end while;
+          set i = i + 1;
+        end while;
 
-      set funnel_cte_sql = funnel_cte_sql || format("""
+        -- 3. Wrap in Window Functions and convert to JSON array
+        set funnel_cte_sql = funnel_cte_sql || format("""
           , funnel_union as ( %s )
           , funnel_math as (
           select 
@@ -398,189 +536,227 @@ begin
           from funnel_union
         )
       """, union_string);
+          
+        set funnel_select_sql = "(select to_json_string(array(select as struct * from funnel_math)))";
+        
+      end if;
 
-      set funnel_select_sql = "(select to_json_string(array(select as struct * from funnel_math)))";
-    end if;
-
-
-    -- 3. Dynamic SQL Construction (HEADER)
-    set sql_header = format("""
-      with all_events as (
-        select *
-        from `your_project.superform_outputs_XXX.%s`
-        where event_date between '%s' and '%s'
-      ),
-      extracted as (
-        select a.*,
-          safe_cast(%s as string) as variant_value
-        from all_events a
-      ),
-      exposures_all as (
-        select
-          case when upper(trim('%s')) = 'USER' then %s
-            else concat(user_pseudo_id, cast(event_params.ga_session_id as string))
-          end as grouping_key,
-          timestamp_micros(time.event_timestamp) as exposure_time,
-          trim(coalesce(variant_value,'')) as variant
-        from extracted
-        where event_date between '%s' and '%s'
-          %s -- exposure_guard
-          %s -- exp_filter
-      ),
-      exposures_labeled as (
-        select grouping_key, exposure_time, variant
-        from exposures_all
-        where variant is not null and variant != ''
-      )
-    """, 
-    events_table_name, format_date('%Y-%m-%d', rec.date_start), format_date('%Y-%m-%d', rec.date_end),
-    variant_col_path, 
-    coalesce(rec.scope, 'User'), id_expr,
-    format_date('%Y-%m-%d', rec.date_start), format_date('%Y-%m-%d', rec.date_end),
-    exposure_guard, exp_filter
-    );
-
-    -- 3b) Universal Footer (Includes Funnel Logic)
-    if rec.conversion_count_all then
-      set sql_footer = format("""
-        %s 
-        %s
-        , joined as (
+      ----------------------------------------------------------------------------
+      -- (4f) Build the Universal Footer based on counting mode
+      ----------------------------------------------------------------------------
+      if rec.conversion_count_all then
+        set sql_footer = format("""
+          %s
+          %s
+          , joined as (
+            select 
+              e.grouping_key, 
+              1 as conv_count, 
+              coalesce(c.conv_value, 0) as conv_value, 
+              pow(coalesce(c.conv_value, 0), 2) as conv_sq_value
+            from exposures_filtered e 
+            join conv_side c using (grouping_key)
+            where c.conv_time >= e.exposure_time
+          )
           select
-            e.grouping_key, 
-            1 as conv_count, 
-            coalesce(c.conv_value, 0) as conv_value, 
-            pow(coalesce(c.conv_value, 0), 2) as conv_sq_value
-          from exposures_filtered e
-          join conv_side c using (grouping_key)
-          where c.conv_time >= e.exposure_time
-        )
-        select
-          (select count(distinct grouping_key) from exposures_filtered) as user_count,
-          coalesce((select sum(conv_count) from joined), 0) as conversion_count,
-          coalesce((select sum(conv_value) from joined), 0.0) as total_conversion_value,
-          coalesce((select sum(conv_sq_value) from joined), 0.0) as total_conversion_sq_value,
-          %s as funnel_json_str
-      """, conv_side_sql, funnel_cte_sql, funnel_select_sql);
-    else
-      set sql_footer = format("""
-        %s 
-        %s
-        , joined_raw as (
-          select e.grouping_key, coalesce(c.conv_value, 0) as conv_value
-          from exposures_filtered e
-          join conv_side c using (grouping_key)
-          where c.conv_time >= e.exposure_time
-        )
-        , joined as (
-          select 
-            grouping_key, 
-            1 as conv_count, 
-            sum(conv_value) as conv_value, 
-            pow(sum(conv_value), 2) as conv_sq_value
-          from joined_raw 
-          group by grouping_key
-        )
-        select
-          (select count(distinct grouping_key) from exposures_filtered) as user_count,
-          coalesce((select sum(conv_count) from joined), 0) as conversion_count,
-          coalesce((select sum(conv_value) from joined), 0.0) as total_conversion_value,
-          coalesce((select sum(conv_sq_value) from joined), 0.0) as total_conversion_sq_value,
-          %s as funnel_json_str
-      """, conv_side_sql, funnel_cte_sql, funnel_select_sql);
-    end if;
-
--- =======================================================================
-    -- OVERLAP LOGIC (Modified for Dataform Header structure)
-    -- =======================================================================
-    
-    if upper(trim(coalesce(rec.user_overlap, ''))) = 'FIRST EXPOSURE' then
-      set sql_logic = format("""
-        , exposures_first as (
-          select grouping_key, exposure_time, variant as variant_label
-          from (
-            select *, row_number() over (partition by grouping_key ORDER by exposure_time ASC) rn
-            from exposures_labeled
-            where regexp_contains(variant, r'%s')
-          ) where rn = 1
-        ),
-        exposures_filtered as (
-          select grouping_key, exposure_time
-          from exposures_first
-          where regexp_contains(trim(variant_label), r'%s')
-        )
-      """, replace(test_variants_regex, '%', '%%'), replace(coalesce(rec.exp_variant_string, ''), '%', '%%'));
-      set dyn_sql = sql_header || sql_logic || sql_footer;
-
-    elseif upper(trim(coalesce(rec.user_overlap, ''))) = 'LAST EXPOSURE' then
-      set sql_logic = format("""
-        , exposures_last_ranked as (
-           select 
-             grouping_key, 
-             variant, 
-             row_number() over (partition by grouping_key order by exposure_time desc) as rn
-           from exposures_labeled
-           where regexp_contains(variant, r'%s')
-        ),
-        final_user_variant as (
-           select grouping_key, variant
-           from exposures_last_ranked
-           where rn = 1 and regexp_contains(trim(variant), r'%s')
-        ),
-        exposures_filtered as (
-           select e.grouping_key, min(e.exposure_time) as exposure_time
-           from exposures_labeled e
-           join final_user_variant f on e.grouping_key = f.grouping_key and e.variant = f.variant
-           group by e.grouping_key
-        )
-      """, replace(test_variants_regex, '%', '%%'), replace(coalesce(rec.exp_variant_string, ''), '%', '%%'));
-      set dyn_sql = sql_header || sql_logic || sql_footer;
-
-    elseif upper(trim(coalesce(rec.user_overlap, ''))) = 'EXCLUDE' then
-      set sql_logic = format("""
-        , user_variant_count as (
-            select grouping_key, count(distinct variant) as variant_count
-            from exposures_labeled
-            where regexp_contains(variant, r'%s')
+            (select count(distinct grouping_key) from exposures_filtered) as user_count,
+            coalesce((select sum(conv_count) from joined), 0) as conversion_count,
+            coalesce((select sum(conv_value) from joined), 0.0) as total_conversion_value,
+            coalesce((select sum(conv_sq_value) from joined), 0.0) as total_conversion_sq_value,
+            %s as funnel_json_str
+        """, conv_side_sql, funnel_cte_sql, funnel_select_sql);
+      else
+        set sql_footer = format("""
+          %s
+          %s
+          , joined_raw as (
+            select e.grouping_key, coalesce(c.conv_value, 0) as conv_value
+            from exposures_filtered e 
+            join conv_side c using (grouping_key)
+            where c.conv_time >= e.exposure_time
+          )
+          , joined as (
+            select 
+              grouping_key, 
+              1 as conv_count, 
+              sum(conv_value) as conv_value, 
+              pow(sum(conv_value), 2) as conv_sq_value
+            from joined_raw 
             group by grouping_key
-        ),
-        exposures_by_variant_first as (
-            select grouping_key, variant, min(exposure_time) as exposure_time
-            from exposures_labeled
-            group by grouping_key, variant
-        ),
-        exposures_filtered as (
-            select e.grouping_key, e.exposure_time
-            from exposures_by_variant_first e
-            join user_variant_count u using (grouping_key)
-            where u.variant_count = 1
-              and regexp_contains(trim(e.variant), r'%s')
-        )
-      """, replace(test_variants_regex, '%', '%%'), replace(coalesce(rec.exp_variant_string, ''), '%', '%%'));
-      set dyn_sql = sql_header || sql_logic || sql_footer;
+          )
+          select
+            (select count(distinct grouping_key) from exposures_filtered) as user_count,
+            coalesce((select sum(conv_count) from joined), 0) as conversion_count,
+            coalesce((select sum(conv_value) from joined), 0.0) as total_conversion_value,
+            coalesce((select sum(conv_sq_value) from joined), 0.0) as total_conversion_sq_value,
+            %s as funnel_json_str
+        """, conv_side_sql, funnel_cte_sql, funnel_select_sql);
+      end if;
 
-    elseif upper(trim(coalesce(rec.user_overlap, ''))) = 'CREDIT BOTH' then
-      set sql_logic = format("""
-        , exposures_filtered as (
-            select grouping_key, min(exposure_time) as exposure_time
-            from exposures_labeled
-            where regexp_contains(trim(variant), r'%s')
+      ----------------------------------------------------------------------------
+      -- (4g) Build the Header
+      ----------------------------------------------------------------------------
+      set sql_header = format("""
+        with all_events as (
+          select *
+          from `your_project.superform_outputs_XXX.%s`
+          where event_date between '%s' and '%s'
+            and %s
+        ),
+        extracted as (
+          select a.*,
+            safe_cast(%s as string) as variant_value
+          from all_events a
+        ),
+        exposures_all as (
+          select
+            case when upper(trim('%s')) = 'USER' then %s
+              else concat(user_pseudo_id, cast(event_params.ga_session_id as string))
+            end as grouping_key,
+            timestamp_micros(time.event_timestamp) as exposure_time,
+            trim(coalesce(variant_value,'')) as variant
+          from extracted
+          where event_date between '%s' and '%s'
+            %s  -- exposure_guard
+            %s  -- exp_filter
+        ),
+        exposures_labeled as (
+          select grouping_key, exposure_time, variant
+          from exposures_all
+          where variant is not null and variant != ''
+        )
+      """, 
+        events_table_name,
+        format_date('%Y-%m-%d', rec.date_start), format_date('%Y-%m-%d', rec.date_end),
+        id_predicate,
+        variant_col_path, 
+        coalesce(rec.scope, 'User'), id_expr,
+        format_date('%Y-%m-%d', rec.date_start), format_date('%Y-%m-%d', rec.date_end),
+        exposure_guard, exp_filter
+      );
+
+      ----------------------------------------------------------------------------
+      -- (5) User Overlap Logic with Raw String Triple Quotes (r'''...''')
+      ----------------------------------------------------------------------------
+      if upper(trim(coalesce(rec.user_overlap, ''))) = 'FIRST EXPOSURE' then
+        set sql_logic = format("""
+          , exposures_first as (
+            select grouping_key, exposure_time, variant as variant_label
+            from (
+              select *, row_number() over (partition by grouping_key ORDER by exposure_time ASC) rn
+              from exposures_labeled
+              where regexp_contains(variant, r'''%s''')
+            ) where rn = 1
+          ),
+          exposures_filtered as (
+            select grouping_key, exposure_time
+            from exposures_first
+            where regexp_contains(trim(variant_label), r'''%s''')
+          )
+        """, 
+          replace(replace(test_variants_regex, '%', '%%'), "'''", "\\'\\'\\'"), 
+          replace(replace(coalesce(rec.exp_variant_string, ''), '%', '%%'), "'''", "\\'\\'\\'")
+        );
+        set dyn_sql = sql_header || sql_logic || sql_footer;
+
+      elseif upper(trim(coalesce(rec.user_overlap, ''))) = 'LAST EXPOSURE' then
+        set sql_logic = format("""
+          , exposures_last_ranked as (
+             select 
+               grouping_key, 
+               variant, 
+               row_number() over (partition by grouping_key order by exposure_time desc) as rn
+             from exposures_labeled
+             where regexp_contains(variant, r'''%s''')
+          ),
+          final_user_variant as (
+             select grouping_key, variant
+             from exposures_last_ranked
+             where rn = 1 and regexp_contains(trim(variant), r'''%s''')
+          ),
+          exposures_filtered as (
+             select e.grouping_key, min(e.exposure_time) as exposure_time
+             from exposures_labeled e
+             join final_user_variant f on e.grouping_key = f.grouping_key and e.variant = f.variant
+             group by e.grouping_key
+          )
+        """, 
+          replace(replace(test_variants_regex, '%', '%%'), "'''", "\\'\\'\\'"), 
+          replace(replace(coalesce(rec.exp_variant_string, ''), '%', '%%'), "'''", "\\'\\'\\'")
+        );
+        set dyn_sql = sql_header || sql_logic || sql_footer;
+
+      elseif upper(trim(coalesce(rec.user_overlap, ''))) = 'EXCLUDE' then
+        set sql_logic = format("""
+          , user_variant_count as (
+             select grouping_key, count(distinct variant) as variant_count
+             from exposures_labeled
+             where regexp_contains(variant, r'''%s''')
+             group by grouping_key
+          ),
+          exposures_by_variant_first as (
+             select grouping_key, variant, min(exposure_time) as exposure_time
+             from exposures_labeled
+             group by grouping_key, variant
+          ),
+          exposures_filtered as (
+             select e.grouping_key, e.exposure_time
+             from exposures_by_variant_first e
+             join user_variant_count u using (grouping_key)
+             where u.variant_count = 1 and regexp_contains(trim(e.variant), r'''%s''')
+          )
+        """, 
+          replace(replace(test_variants_regex, '%', '%%'), "'''", "\\'\\'\\'"), 
+          replace(replace(coalesce(rec.exp_variant_string, ''), '%', '%%'), "'''", "\\'\\'\\'")
+        );
+        set dyn_sql = sql_header || sql_logic || sql_footer;
+
+      elseif upper(trim(coalesce(rec.user_overlap, ''))) = 'CREDIT BOTH' then
+        set dyn_sql = format("""
+          with all_events as (
+            select *
+            from `your_project.superform_outputs_XXX.%s`
+            where event_date between '%s' and '%s'
+              and %s
+          ),
+          exposures_filtered as (
+            select
+              case when upper(trim('%s')) = 'USER' then %s
+                else concat(user_pseudo_id, cast(event_params.ga_session_id as string))
+              end as grouping_key,
+              min(timestamp_micros(time.event_timestamp)) as exposure_time
+            from all_events
+            where event_date between '%s' and '%s'
+              %s
+              and regexp_contains(coalesce(safe_cast(%s as string), ''), r'''%s''')
+              %s
             group by grouping_key
-        )
-      """, replace(coalesce(rec.exp_variant_string, ''), '%', '%%'));
-      set dyn_sql = sql_header || sql_logic || sql_footer;
+          )
+        """, 
+          events_table_name,
+          format_date('%Y-%m-%d', rec.date_start), format_date('%Y-%m-%d', rec.date_end),
+          id_predicate, 
+          coalesce(rec.scope, 'User'), 
+          id_expr, 
+          format_date('%Y-%m-%d', rec.date_start), 
+          format_date('%Y-%m-%d', rec.date_end), 
+          exposure_guard, 
+          variant_col_path,
+          replace(replace(coalesce(rec.exp_variant_string, ''), '%', '%%'), "'''", "\\'\\'\\'"), 
+          exp_filter
+        );
+        set dyn_sql = dyn_sql || sql_footer;
 
-    else
-      set dyn_sql = null;
-    end if;
+      else
+        set dyn_sql = null;
+      end if;
 
-    -- Execute Dynamic SQL
-    if dyn_sql is not null then
-      execute immediate dyn_sql into user_count, conversion_count, total_conversion_value, total_conversion_sq_value, funnel_json_str;
+      ----------------------------------------------------------------------------
+      -- (6) Execute the dynamic SQL
+      ----------------------------------------------------------------------------
+      if dyn_sql is not null then
+        execute immediate dyn_sql into user_count, conversion_count, total_conversion_value, total_conversion_sq_value, funnel_json_str;
 
-        ----------------------------------------------------------------------------
-        -- Stores 1 row per variant run
-        ----------------------------------------------------------------------------
         if query_info_logging then
           insert into bigquery_ab_analyzer_query_information_buffer (id, job_id, bytes_billed)
           select
@@ -591,7 +767,6 @@ begin
           where job_id = @@last_job_id;
         end if;
 
-        -- Funnel Insert Logic
         delete from `your_project.bigquery_ab_analyzer.experiments_funnel_report` 
         where id = rec.id and variant = rec.variant;
 
@@ -613,22 +788,21 @@ begin
             current_date()
           from unnest(json_extract_array(funnel_json_str)) as f;
         end if;
+        
+        insert into results (
+          id, variant, variant_name, conversion_event, scope, user_overlap,
+          date_start, date_end, user_count, conversion_count, total_conversion_value, total_conversion_sq_value
+        )
+        values (
+          rec.id, rec.variant, rec.variant_name, rec.conversion_event, rec.scope, rec.user_overlap,
+          rec.date_start, rec.date_end, user_count, conversion_count, total_conversion_value, total_conversion_sq_value
+        );
+      end if;
+    end for;
 
-      insert into results (
-        id, variant, variant_name, conversion_event, scope, user_overlap,
-        date_start, date_end, user_count, conversion_count, total_conversion_value, total_conversion_sq_value
-      )
-      values (
-        rec.id, rec.variant, rec.variant_name, rec.conversion_event, rec.scope, rec.user_overlap,
-        rec.date_start, rec.date_end, user_count, conversion_count, total_conversion_value, total_conversion_sq_value
-      );
-    end if;
-
-  end for;
-
-  ----------------------------------------------------------------------------
-  -- (4) FINAL MERGE: Update Report Table
-  ----------------------------------------------------------------------------
+    ----------------------------------------------------------------------------
+    -- (8) Final pivot + merge
+    ----------------------------------------------------------------------------
     merge `your_project.bigquery_ab_analyzer.experiments_report` T
     using (
       with ab_base as (
@@ -670,8 +844,8 @@ begin
         from results r
         join `your_project.bigquery_ab_analyzer.experiments` e
           on r.id = e.id
-        and r.variant = e.variant
-        and e.analyze_test = true
+          and r.variant = e.variant
+          and e.analyze_test = true
         group by
           r.id, e.experiment_name, r.scope,
           e.confidence, e.hypothesis, e.event_value_test, e.analyze_test, e.user_overlap, e.date_comparison, e.identity_source, e.analyze_funnel,
@@ -693,7 +867,6 @@ begin
           total_conversion_value_b,
           total_conversion_sq_value_a,
           total_conversion_sq_value_b,
-        
           confidence_level,
           hypothesis,
           event_value_test,
@@ -714,15 +887,12 @@ begin
         with base as (
           select
             ab.*,
-            -- validity for proportions test (once-per-user/session)
             ab.test_a > 0 and ab.test_b > 0
             and ab.conversion_a between 0 and ab.test_a
             and ab.conversion_b between 0 and ab.test_b as ok_prop,
-            -- identify count-all mode
             (ab.conversions_counting_mode = 'Once per Event') as is_rate_mode
           from ab
         ),
-        -- Only the rows where the proportions UDF is valid
         valid_prop as (
           select *
           from base
@@ -739,7 +909,6 @@ begin
             b.confidence_level, b.hypothesis
           )]) as u
         ),
-        -- Only the rows where the rate test is valid
         valid_rate as (
           select *
           from base
@@ -756,37 +925,36 @@ begin
             b.confidence_level, b.hypothesis
           )]) as r
         )
-      select
-        b.id,
-        b.date_start,
-        b.date_end,
-        b.experiment_name,
-        b.conversion_event,
-        b.scope,
-        b.identity_source,
-        b.hypothesis,
-        b.confidence_level,
-        b.analyze_test,
-        b.user_overlap,
-        b.date_comparison,
-        b.analyze_funnel,
-        b.test_a,
-        b.conversion_a,
-        b.test_b,
-        b.conversion_b,
-        b.conversions_counting_mode,
-        b.total_conversion_value_a,
-        b.total_conversion_value_b,
-        -- Use whichever stats exist for this row
-        coalesce(p.rate_a, r.rate_a) as conv_rate_a,
-        coalesce(p.rate_b, r.rate_b) as conv_rate_b,
-        coalesce(p.z_val, r.z_val) as conv_z_score,
-        coalesce(p.p_val, r.p_val) as conv_p_value,
-        coalesce(p.significance, r.significance) as conv_significance,
-        coalesce(p.details, r.details) as conv_details
-      from base b
-      left join stats_prop p using (id)
-      left join stats_rate r using (id)
+        select
+          b.id,
+          b.date_start,
+          b.date_end,
+          b.experiment_name,
+          b.conversion_event,
+          b.scope,
+          b.identity_source,
+          b.hypothesis,
+          b.confidence_level,
+          b.analyze_test,
+          b.user_overlap,
+          b.date_comparison,
+          b.analyze_funnel,
+          b.test_a,
+          b.conversion_a,
+          b.test_b,
+          b.conversion_b,
+          b.conversions_counting_mode,
+          b.total_conversion_value_a,
+          b.total_conversion_value_b,
+          coalesce(p.rate_a, r.rate_a) as conv_rate_a,
+          coalesce(p.rate_b, r.rate_b) as conv_rate_b,
+          coalesce(p.z_val, r.z_val) as conv_z_score,
+          coalesce(p.p_val, r.p_val) as conv_p_value,
+          coalesce(p.significance, r.significance) as conv_significance,
+          coalesce(p.details, r.details) as conv_details
+        from base b
+        left join stats_prop p using (id)
+        left join stats_rate r using (id)
       ),
       val as (
         select
@@ -863,119 +1031,64 @@ begin
         current_date() as date_last_analyzed
       from conv
       left join val_result using (id)
-        ) as source
-          on T.id = source.id
-      when matched then
-        update set 
-          date_start = source.date_start,
-          date_end = source.date_end,
-          experiment_name = source.experiment_name,
-          conversion_event = source.conversion_event,
-          scope = source.scope,
-          identity_source = source.identity_source,
-          hypothesis = source.hypothesis,
-          confidence_level = source.confidence_level,
-          analyze_test = source.analyze_test,
-          user_overlap = source.user_overlap,
-          date_comparison = source.date_comparison,
-          analyze_funnel = source.analyze_funnel,
-          test_a = source.test_a,
-          conversion_a = source.conversion_a,
-          test_b = source.test_b,
-          conversion_b = source.conversion_b,
-          conv_rate_a = source.conv_rate_a,
-          conv_rate_b = source.conv_rate_b,
-          conv_z_score = source.conv_z_score,
-          conv_p_value = source.conv_p_value,
-          conv_significance = source.conv_significance,
-          conv_details = source.conv_details,
-          conversions_counting_mode = source.conversions_counting_mode,
-          total_conversion_value_a = source.total_conversion_value_a,
-          total_conversion_value_b = source.total_conversion_value_b,
-          mean_value_a = source.mean_value_a,
-          mean_value_b = source.mean_value_b,
-          t_value = source.t_value,
-          value_p_value = source.value_p_value,
-          value_significance = source.value_significance,
-          value_details = source.value_details,
-          date_last_analyzed = source.date_last_analyzed
-      when not matched then
-        insert (
-          id,
-          date_start,
-          date_end,
-          experiment_name,
-          conversion_event,
-          scope,
-          identity_source,
-          hypothesis,
-          confidence_level,
-          analyze_test,
-          user_overlap,
-          date_comparison,
-          analyze_funnel,
-          test_a,
-          conversion_a,
-          test_b,
-          conversion_b,
-          conv_rate_a,
-          conv_rate_b,
-          conv_z_score,
-          conv_p_value,
-          conv_significance,
-          conv_details,
-          conversions_counting_mode,
-          total_conversion_value_a,
-          total_conversion_value_b,
-          mean_value_a,
-          mean_value_b,
-          t_value,
-          value_p_value,
-          value_significance,
-          value_details,
-          date_last_analyzed
-        )
-        values (
-          source.id,
-          source.date_start,
-          source.date_end,
-          source.experiment_name,
-          source.conversion_event,
-          source.scope,
-          source.identity_source,
-          source.hypothesis,
-          source.confidence_level,
-          source.analyze_test,
-          source.user_overlap,
-          source.date_comparison,
-          source.analyze_funnel,
-          source.test_a,
-          source.conversion_a,
-          source.test_b,
-          source.conversion_b,
-          source.conv_rate_a,
-          source.conv_rate_b,
-          source.conv_z_score,
-          source.conv_p_value,
-          source.conv_significance,
-          source.conv_details,
-          source.conversions_counting_mode,
-          source.total_conversion_value_a,
-          source.total_conversion_value_b,
-          source.mean_value_a,
-          source.mean_value_b,
-          source.t_value,
-          source.value_p_value,
-          source.value_significance,
-          source.value_details,
-          source.date_last_analyzed
-        );
+    ) as source
+    on T.id = source.id
+    when matched then
+      update set 
+        date_start = source.date_start,
+        date_end = source.date_end,
+        experiment_name = source.experiment_name,
+        conversion_event = source.conversion_event,
+        scope = source.scope,
+        identity_source = source.identity_source,
+        hypothesis = source.hypothesis,
+        confidence_level = source.confidence_level,
+        analyze_test = source.analyze_test,
+        user_overlap = source.user_overlap,
+        date_comparison = source.date_comparison,
+        analyze_funnel = source.analyze_funnel,
+        test_a = source.test_a,
+        conversion_a = source.conversion_a,
+        test_b = source.test_b,
+        conversion_b = source.conversion_b,
+        conv_rate_a = source.conv_rate_a,
+        conv_rate_b = source.conv_rate_b,
+        conv_z_score = source.conv_z_score,
+        conv_p_value = source.conv_p_value,
+        conv_significance = source.conv_significance,
+        conv_details = source.conv_details,
+        conversions_counting_mode = source.conversions_counting_mode,
+        total_conversion_value_a = source.total_conversion_value_a,
+        total_conversion_value_b = source.total_conversion_value_b,
+        mean_value_a = source.mean_value_a,
+        mean_value_b = source.mean_value_b,
+        t_value = source.t_value,
+        value_p_value = source.value_p_value,
+        value_significance = source.value_significance,
+        value_details = source.value_details,
+        date_last_analyzed = source.date_last_analyzed
+    when not matched then
+      insert (
+        id, date_start, date_end, experiment_name, conversion_event, scope, identity_source,
+        hypothesis, confidence_level, analyze_test, user_overlap, date_comparison, analyze_funnel,
+        test_a, conversion_a, test_b, conversion_b, conv_rate_a, conv_rate_b, conv_z_score,
+        conv_p_value, conv_significance, conv_details, conversions_counting_mode,
+        total_conversion_value_a, total_conversion_value_b, mean_value_a, mean_value_b,
+        t_value, value_p_value, value_significance, value_details, date_last_analyzed
+      )
+      values (
+        source.id, source.date_start, source.date_end, source.experiment_name, source.conversion_event, source.scope, source.identity_source,
+        source.hypothesis, source.confidence_level, source.analyze_test, source.user_overlap, source.date_comparison, source.analyze_funnel,
+        source.test_a, source.conversion_a, source.test_b, source.conversion_b, source.conv_rate_a, source.conv_rate_b, source.conv_z_score,
+        source.conv_p_value, source.conv_significance, source.conv_details, source.conversions_counting_mode,
+        source.total_conversion_value_a, source.total_conversion_value_b, source.mean_value_a, source.mean_value_b,
+        source.t_value, source.value_p_value, source.value_significance, source.value_details, source.date_last_analyzed
+      );
 
     ----------------------------------------------------------------------------
     -- (9) BUFFER THE MERGE COST
     ----------------------------------------------------------------------------
     if query_info_logging then
-      -- Grab the cost of the Merge we just ran and add it to the buffer
       insert into bigquery_ab_analyzer_query_information_buffer (id, job_id, bytes_billed)
       select
         active_exps.id,
@@ -983,7 +1096,6 @@ begin
         cast(jobs.total_bytes_billed / active_exps.exp_count as int64)
       from `region-eu`.INFORMATION_SCHEMA.JOBS_BY_USER as jobs
       cross join (
-        -- Find all active experiments in the buffer and count them
         select id, count(*) over() as exp_count 
         from (select distinct id from bigquery_ab_analyzer_query_information_buffer)
       ) as active_exps
@@ -1080,28 +1192,26 @@ begin
         where dest.id = ai.id;
 
       ----------------------------------------------------------------------------
-      -- (10b) BUFFER THE AI UPDATE COST (BigQuery bytes only)
+      -- (10b) BUFFER THE AI UPDATE COST
       ----------------------------------------------------------------------------
       if query_info_logging then
         insert into bigquery_ab_analyzer_query_information_buffer (id, job_id, bytes_billed)
-      select
-        active_exps.id,
-        jobs.job_id,
-        cast(jobs.total_bytes_billed / active_exps.exp_count as int64)
-      from `region-eu`.INFORMATION_SCHEMA.JOBS_BY_USER as jobs
-      cross join (
-        select id, count(*) over() as exp_count 
-        from (select distinct id from bigquery_ab_analyzer_query_information_buffer)
-      ) as active_exps
-      where jobs.job_id = @@last_job_id;
+        select
+          active_exps.id,
+          jobs.job_id,
+          cast(jobs.total_bytes_billed / active_exps.exp_count as int64)
+        from `region-eu`.INFORMATION_SCHEMA.JOBS_BY_USER as jobs
+        cross join (
+          select id, count(*) over() as exp_count 
+          from (select distinct id from bigquery_ab_analyzer_query_information_buffer)
+        ) as active_exps
+        where jobs.job_id = @@last_job_id;
       end if;
     end if;
 
     ----------------------------------------------------------------------------
     -- (11) FINAL SINGLE AGGREGATION
     ----------------------------------------------------------------------------
-    -- Now that the buffer has the loop queries, the merge query, AND the AI query...
-    -- Aggregate everything into ONE SINGLE INSERT
     if query_info_logging then
       insert into `your_project.bigquery_ab_analyzer.experiments_query_information` 
       (id, execution_time, job_ids, total_bytes_billed, estimated_cost_usd)

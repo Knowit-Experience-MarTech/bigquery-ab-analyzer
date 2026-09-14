@@ -32,7 +32,8 @@ function checkForUpdates() {
   const ui = SpreadsheetApp.getUi();
 
   // Get sheet version.
-  const sheetReleaseVersion = ss.getSheetByName(settingsTab).getRange('SettingsVersion').getValue();
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheetReleaseVersion = ss.getSheetByName(settingsSheetName).getRange('SettingsVersion').getValue();
 
   // Get Github version.
   const releases = JSON.parse(
