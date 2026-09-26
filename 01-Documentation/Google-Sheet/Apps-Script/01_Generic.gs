@@ -23,7 +23,7 @@ function onOpen() {
       .addItem('Refresh Events', 'refreshEvents')
       .addItem('Refresh Parameters', 'refreshParameters'))
     .addSubMenu(ui.createMenu('Settings')
-      .addItem('Export AI Summary Settings', 'exportSettingsToBigQuery')
+      .addItem('Export Settings', 'exportSettingsToBigQuery')
       .addItem('Initialize onEdit Trigger', 'setupInstallableTrigger'))
     .addItem('Check for Updates', 'checkForUpdates')
     .addToUi();
@@ -1196,32 +1196,37 @@ function getFunnelModalData(expId) {
   const lastRow = funnelsSheet ? funnelsSheet.getLastRow() : 0;
   
   if (lastRow >= 5) {
-    // Columns: A: expId, B: stepNum, C: variant, D: eventName, E: filterOn, F: filterField, G: filterValue
-    const data = funnelsSheet.getRange(5, 1, lastRow - 4, 7).getValues();
-    for (let i = 0; i < data.length; i++) {
-      if (String(data[i][0]).trim() === String(expId).trim()) {
-        const stepNum = parseInt(data[i][1]) || 1;
-        const filterField = String(data[i][5] || "").trim();
-        const filterVal = String(data[i][6] || "").trim();
-        
-        if (!stepsMap[stepNum]) {
-          stepsMap[stepNum] = {
-            stepNum: stepNum,
-            variant: data[i][2] || "Both",
-            eventName: data[i][3] || "",
-            filters: []
-          };
-        }
-        
-        if (filterField !== "") {
-          stepsMap[stepNum].filters.push({
-            param_key: filterField,
-            param_val: filterVal
-          });
-        }
+  // Columns: A: expId, B: stepNum, C: variant, D: eventName, E: filterOn, F: filterField, G: filterValue
+  const data = funnelsSheet.getRange(5, 1, lastRow - 4, 7).getValues();
+  for (let i = 0; i < data.length; i++) {
+    if (String(data[i][0]).trim() === String(expId).trim()) {
+      const stepNum = parseInt(data[i][1]) || 1;
+      const variant = data[i][2] || "Both";
+      const eventName = data[i][3] || "";
+      const filterField = String(data[i][5] || "").trim();
+      const filterVal = String(data[i][6] || "").trim();
+      
+      // FIX: Create a unique key so A and B variants don't overwrite each other
+      const stepKey = stepNum + "_" + variant + "_" + eventName;
+      
+      if (!stepsMap[stepKey]) {
+        stepsMap[stepKey] = {
+          stepNum: stepNum,
+          variant: variant,
+          eventName: eventName,
+          filters: []
+        };
+      }
+      
+      if (filterField !== "") {
+        stepsMap[stepKey].filters.push({
+          param_key: filterField,
+          param_val: filterVal
+        });
       }
     }
   }
+}
 
   let steps = Object.values(stepsMap);
 
