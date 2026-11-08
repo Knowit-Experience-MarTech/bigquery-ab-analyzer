@@ -16,7 +16,7 @@ The framework supports the following tools:
 * [Mixpanel](https://mixpanel.com/home/)
 * [PostHog](https://posthog.com/)
 
-The solution is built around **Google Sheet**, **BigQuery**, **Vertex AI** and **Data Studio**.
+The solution is built around **Google Sheet**, **BigQuery**, **Gemini AI** and **Data Studio**.
 
 <img src="02-Images/bigqery-ab-analyzer-google-sheet-experiments.png" alt="BigQuery A/B Analyzer - Google Sheet Experiments Tab" />
 
@@ -126,7 +126,7 @@ The framework supports 4 different methods for identifying/analysing users:
 
 ### Your Personal Analyst: AI Summary
 
-* **AI Summary** is powered by [**Gemini**](https://docs.cloud.google.com/vertex-ai/generative-ai/docs/models). Gemini is interpreting the test, and summarises the result with recommendations.
+* **AI Summary** is powered by [**Gemini**](https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/google-models). Gemini is interpreting the test, and summarises the result with recommendations.
 * Gemini is only interpreting the result, so the size of the data analysed will not affect the cost.
 * AI Prompt can be edited in Google Sheet.
 * Gemini is told exactly what the value measures (e.g. revenue or items sold), and gets the likely range, warnings and Sample Ratio Mismatch check.
