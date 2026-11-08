@@ -1,43 +1,18 @@
 # Google Cloud / BigQuery setup
 
-1. Create a folder in **Google Drive** for the **BigQuery A/B Analyzer** solution.
-	1. Within that folder, create a **Images** folder.
-		1. Change **sharing** on the **Images** folder to **Anyone on the Internet with the link can view**.
-2. Copy the [**Google Sheet**](https://docs.google.com/spreadsheets/d/1UC2CyflDU20liWG4QWxXLJWaBPh5A3GPgbSNDt-EKN0/edit?usp=sharing) into the **BigQuery A/B Analyzer** folder.
-	1. Go to the **Settings** sheet. Edit the following fields:
-		1. **Experiment Settings**
-			1. **Data Set Location**: As default it is set to **EU**. Change it to **US** if that is correct for you.
-			2. **Project ID**: Insert your Google Cloud Project ID here.
-		2. **Download data to Sheet Settings**
-			1. **Analytics Tool**: Google Analytics, GA4Dataform or Amplitude.
-			2. **BigQuery Data Set ID**: BigQuery Data Set ID for your analytics tool. Ex. analytics_12345.
-			3. **BigQuery Table ID**: Not relevant for GA4.
-		3. It's recommended to leave the other settings as is for simplicity.
-		4. See also [**Settings** detailed information](../Google-Sheet/Settings-Sheet).
-	2. Go to the menu **BigQuery A/B Analyzer** -> **Get Data from BigQuery**
-		1. Refresh Events
-		2. Refresh Parameters
-3. Run the [**Create-Tables-and-UDF.sql**](../Google-Cloud/01-BigQuery/Create-Tables-and-UDF.sql) in BigQuery. This will create **7** tables and **9** User Defined Functions. When you run your analyzis later on, there will also be created some staging tables. Staging tables will come and go. They expires after 24 hours.
+1. Set up the **Google Sheet** first. Follow the setup in [**Google Sheet**](../Google-Sheet).
+	* This includes copying the Google Sheet, adding your **Project ID**, **Data Set Location**, **BigQuery Data Set ID** and **BigQuery Table ID** in the **Settings** sheet, and getting events and parameters from BigQuery.
+2. Run the [**Create-Tables-and-UDF.sql**](../Google-Cloud/01-BigQuery/Create-Tables-and-UDF.sql) in BigQuery. This will create **8** tables and **11** User Defined Functions. When you run your analyzis later on, there will also be created some staging tables. Staging tables will come and go. They expires after 24 hours.
     1. Replace **your_project** with the name of your project.
     2. Region: As default **EU** is set as region. Change this to **US** if that is correct for you.
-4. **Copy the scheduled query relevant to you:**
+    3. When the script has run, go to the Google Sheet menu **BigQuery A/B Analyzer** -> **Settings** -> **Export Settings**. This saves the region and AI Summary settings to BigQuery.
+3. **Copy the scheduled query relevant to you:**
 	1. [**Google Analytics 4** scheduled query](../Google-Cloud/01-BigQuery/01-Scheduled-queries/bigquery_ab_analyzer_ga4.sql).
-		1. Replace **your_project** with the name of your project.
-		2. Replace **analytics_XXX** with your GA4 data set.
 	2. [**GA4Dataform** scheduled query](../Google-Cloud/01-BigQuery/01-Scheduled-queries/bigquery_ab_analyzer_ga4dataform.sql).
-		1. Replace **your_project** with the name of your project.
-		2. Replace **analytics_XXX** with your GA4 data set.
-		3. Replace 'region-eu' with 'region-us' if your data is in US.
 	3. [**Amplitude** scheduled query](../Google-Cloud/01-BigQuery/01-Scheduled-queries/bigquery_ab_analyzer_amplitude.sql).
-		1. In **declare events_table**, replace **your_project.your_dataset.deduplicated_EVENTS_1234** with your project, data set and deduplicated table function.
-		2. Replace **your_project** with the name of your project.
-		3. Replace 'region-eu' with 'region-us' if your data is in US.
 	4. [**Mixpanel** scheduled query](../Google-Cloud/01-BigQuery/01-Scheduled-queries/bigquery_ab_analyzer_mixpanel.sql).
-		1. In **declare events_table**, replace **your-project.mixpanel** with your project and data set.
-		2. Replace 'region-eu' with 'region-us' if your data is in US.
 	5. [**PostHog** scheduled query](../Google-Cloud/01-BigQuery/01-Scheduled-queries/bigquery_ab_analyzer_posthog.sql).
-		1. In **declare events_table**, replace **your-project.posthog** with your project and data set.
-		2. Replace 'region-eu' with 'region-us' if your data is in US.
+		* In all queries, replace **your_project** with the name of your project. Source data set, table and region come from the **Settings** sheet, so they don't have to be changed in the query.
 	6. **Common settings for GA4, GA4Dataform, Amplitude, Mixpanel & PostHog:**
 		1. Go to [**Scheduled queries**](https://console.cloud.google.com/bigquery/scheduled-queries) and **Create scheduled query in editor**.
 			1. If you have changed suggested names for **data set** and **tables** in **Settings Sheet**, you must also replace these.
@@ -47,7 +22,7 @@
 			5. **Automatic location selection:** Untick checkbox
 			6. **Multi-region:** Ex. "EU"
 			7. **Save**
-5. Go to [**Logs Router**](https://console.cloud.google.com/logs/router), and click the **CREATE SINK** button.
+4. Go to [**Logs Router**](https://console.cloud.google.com/logs/router), and click the **CREATE SINK** button.
     1. Give the sink a name, ex. **bigquery_ab_analyzer**.
     2. Choose **Google Cloud Pub/Sub topic** as the destination.
     3. From the list of available Pub/Sub topics, click to **create a new topic**.
@@ -58,7 +33,7 @@
 		protoPayload.serviceData.jobCompletedEvent.job.jobConfiguration.query.destinationTable.datasetId="bigquery_ab_analyzer"
 		protoPayload.serviceData.jobCompletedEvent.job.jobConfiguration.query.destinationTable.tableId="experiments"
      ```
-6. Go to [**Cloud Run**](https://console.cloud.google.com/run), and click **Write a function**.
+5. Go to [**Cloud Run**](https://console.cloud.google.com/run), and click **Write a function**.
     1. Choose **Use an inline editor to create a function**
 	2. **Service name:** bigquery-ab-analyzer
 	3. **Select region:** Select based on your location and "Low CO2". My choice is Finland.
@@ -88,13 +63,13 @@
 		1. **Request timeout:** 60
 		2. **Maximum concurrent requests per instance:** 1
 	12. **Create**
-7. Select the **Cloud Run services** (bigquery-ab-analyzer) that point **5.** created
+6. Select the **Cloud Run services** (bigquery-ab-analyzer) that point **5.** created
     1. Select **Source** tab
 	    1. **Edit source**
 		    1. **Function entry point:** runABAnalyzerQuery
 		    2. Edit **index.js** and **package.json**. See the chapter [**Cloud Run Source code**](#cloud-run-source-code) below.
 		2. **Save and redeploy**
-8. Copy **Looker Studio**
+7. Copy **Looker Studio**
     1. Make a copy of [**BigQuery A/B Analyzer**](https://lookerstudio.google.com/reporting/489a1bf0-030e-4c3c-87e1-f3286a99b4ad/page/HMgiD)
     2. Click on the 3 vertical dots available at the top right corner, then select "**Make a copy**"
     3. Do not pay attention to the warnings (Sometimes the data source name is listed as 'unknown').

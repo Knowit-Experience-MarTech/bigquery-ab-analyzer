@@ -107,7 +107,12 @@ create or replace function `your_project.bigquery_ab_analyzer.udf_ab_count_welch
           t,
           alpha,
           -- tail(|t|) ≈ φ(|t|) * P(tt)
-          (phi_abs * (((((1.330274429 * tt - 1.821255978) * tt + 1.781477937) * tt - 0.356563782) * tt + 0.319381530) * tt)) as tail_abs,
+          -- Student's t tail with Welch's degrees of freedom. Above 1000 df the t and normal
+          -- distributions are practically identical, so the normal approximation is used.
+          coalesce(
+            if(df <= 1000, `your_project.bigquery_ab_analyzer.udf_student_t_upper_tail`(abs(t), df), null),
+            (phi_abs * (((((1.330274429 * tt - 1.821255978) * tt + 1.781477937) * tt - 0.356563782) * tt + 0.319381530) * tt))
+          ) as tail_abs,
           phi_abs
         from poly
       ),

@@ -32,17 +32,21 @@ To see the latest event names and parameters in your dropdown menus, you must pu
 
 Wait for the "toast" notification at the bottom right confirming success.
 
-### Step A: Export AI Summary Settings to BigQuery
+### Step A: Export Settings to BigQuery
 
 1. You turn **AI Summary** on and off in **Settings** tab.
 2. The **AI Prompt** instructs how Gemini should interpret the result.
-3. If you activated **AI Summary**, click the menu 📈 **BigQuery A/B Analyzer** at the top.
-4. Select **Settings > Export AI Summary Settings**.
+3. Click the menu 📈 **BigQuery A/B Analyzer** at the top.
+4. Select **Settings > Export Settings**.
+
+This saves the AI Summary settings and the BigQuery region (**Data Set Location**) to BigQuery. Do this again if you change these settings.
 
 Wait for the "toast" notification at the bottom right confirming success.
 
 ### Step B: Configure the Test
 Fill out a row in the Experiments tab (see [**Experiments sheet**](Google-Sheet/README.md#experiments-sheet) and configure [**Filters**](Google-Sheet/README.md#filtering) for details).
+
+Set **Total target sample** for the experiment. Use the **Pre-Test Calculator** to find the sample size, and add about 20%. The target sample is used by **sequential monitoring**, which makes it safe to check the results every day.
 
 ### Step C: Run Analysis
 
@@ -56,6 +60,8 @@ Once the job finishes, you can download the data manually into the **Results tab
 
 * Green: Statistically Significant result.
 * Red: Not Significant.
+* Grey: Not Evaluated (not enough data).
+* **Warnings** column: Explains when the test assumptions do not hold (Credit Both, date comparison or Sample Ratio Mismatch). See [FAQ: What does the Warnings column mean?](../README.md#138-what-does-the-warnings-column-mean)
 
 ## 4. Handling User Overlap
 
@@ -74,7 +80,7 @@ What happens if a user is seen in both Variant A and Variant B? Use the **User O
     <tr>
       <th scope="row" style="text-align: left;">Standard A/B Test</th>
       <td>🛡️ Exclude</td>
-      <td>Removes overlapping users entirely. Ensures scientific purity. Credit Both may also be used if you are sure there are no overlapping users.</td>
+      <td>Removes overlapping users entirely. Ensures scientific purity. Credit Both may also be used if you are sure there are no overlapping users. Credit Both will always show a warning, since overlapping users make the groups dependent.</td>
     </tr>
     <tr>
       <th scope="row" style="text-align: left;">Date Comparison</th>
@@ -183,6 +189,26 @@ To use the solution (run analysis), these are the minimum BigQuery permissions n
       <th scope="row" style="text-align: left;">Dropdowns are empty</th>
       <td>Metadata not synced.</td>
       <td>Run Get Data from BigQuery > Refresh Events/Parameters.</td>
+    </tr>
+    <tr>
+      <th scope="row" style="text-align: left;">Result is NOT_SIGNIFICANT, but the p-value is below 0.05</th>
+      <td>Sequential monitoring. The target sample is not reached yet.</td>
+      <td>This is expected. Early in the test, the p-value must be lower. The details text shows how much of the target sample is collected, e.g. "No significant difference (26% of target)". Let the test run, or check <strong>Total target sample</strong>.</td>
+    </tr>
+    <tr>
+      <th scope="row" style="text-align: left;">Warnings shows Sample Ratio Mismatch</th>
+      <td>The traffic split between A and B differs from the expected split (50/50 as default).</td>
+      <td>Check the A/B test tool, tracking of the experiment event and filters. If the split is meant to be different, change <code>srm_expected_share_b</code> in the scheduled query.</td>
+    </tr>
+    <tr>
+      <th scope="row" style="text-align: left;">Scheduled query error: "Experiment X has no source table"</th>
+      <td>The experiment was exported to BigQuery before v2.4, or BigQuery Data Set ID / Table ID is empty in Settings.</td>
+      <td>Check <strong>BigQuery Data Set ID</strong> and <strong>BigQuery Table ID</strong> in the Settings sheet, and analyze the experiment again.</td>
+    </tr>
+    <tr>
+      <th scope="row" style="text-align: left;">AI Summary is not updated</th>
+      <td>Gemini rejected the request (e.g. "Exceeded rate limits").</td>
+      <td>The query tries again up to 3 times. If it still fails, the analysis is saved and the previous AI Summary is kept. Run the analysis again later.</td>
     </tr>
     <tr>
       <th scope="row" style="text-align: left;">"Block Skipped" Error</th>

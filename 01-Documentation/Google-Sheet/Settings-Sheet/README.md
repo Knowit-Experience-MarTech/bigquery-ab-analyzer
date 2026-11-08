@@ -23,8 +23,8 @@ You may have to scroll sideways in the table below to see all the settings.
     </tr>
     <tr>
       <th scope="row" style="text-align: left;">Data Set Location</th>
-      <td>BigQuery region.</td>
-      <td colspan="3">US or EU.</td>
+      <td>BigQuery region. Used by the Google Sheet and by the scheduled query. Export it with <strong>BigQuery A/B Analyzer -> Settings -> Export Settings</strong>.</td>
+      <td colspan="3">US, EU or a single region (e.g. europe-west1).</td>
     </tr>
     <tr>
       <th scope="row" style="text-align: left;">Project ID</th>
@@ -71,19 +71,20 @@ You may have to scroll sideways in the table below to see all the settings.
     </tr>
 	<tr>
       <th scope="row" style="text-align: left;">Total target sample</th>
-      <td>Total target sample size before AI will recommend the output. This is also known as "Fixed horizon".</td>
+      <td>Default total target sample size (A + B) for new experiments. Used by sequential monitoring and AI Summary. Use the Pre-Test Calculator to find the sample size, and add about 20%.</td>
       <td>2000</td>
     </tr>
 	<tr>
       <th scope="row" style="text-align: left;">AI Prompt</th>
-      <td>To export AI Prompt to BigQuery, go to menu <strong>BigQuery A/B Analyzer -> Settings ->  Export AI Summary Settings</strong></td>
+      <td>To export AI Prompt to BigQuery, go to menu <strong>BigQuery A/B Analyzer -> Settings -> Export Settings</strong>. The prompt in the sheet overrides the default prompt in the scheduled query.</td>
 	  <td>You are a senior CRO and data analytics consultant summarizing A/B test results for an executive dashboard.
 Write exactly two concise, highly structured paragraphs of professional prose separated by a single blank line. Do not use rule titles, bullet points, hyphens, or markdown headings.
 
 Paragraph 1 - Executive Decision & Statistical Summary:
-1. Lead immediately with a clear verdict: Declare the winning variant (or "Inconclusive/No Winner"), state whether it achieved the Required Confidence Level, and quote the exact conversion lift from "Conversion Details".
-2. Synthesize business impact: If monetary or mean values are present, evaluate whether the lift is driven by higher conversion volume, higher average order value, or both. Treat total value as a unitless scale metric (do not add currency symbols). Reference Conversion P-Value or Value P-Value explicitly without scientific notation.
-3. Decision & Horizon Check: Check sample size against {{TARGET_SAMPLE}} and "Estimated Days Remaining". If traffic is below target, warn of false-positive (peeking) risk and recommend letting the test run for the remaining days. If target is reached (0 days remaining), recommend closing the test. If underpowered (<1000 sample target), note the detection limitation.
+1. Lead immediately with a clear verdict: Declare the winning variant (or "Inconclusive/No Winner"), state whether it achieved the Required Confidence Level, and quote the exact conversion lift from "Conversion Details" together with the "Conversion Lift Confidence Interval" as its likely range.
+2. Synthesize business impact: "Value Metric" describes what the value measures; describe the value exactly that way and do not assume it is revenue, items or anything else. "Value per Participant" includes participants who did not convert and is the main business metric. Use "Value per Conversion" to explain whether a value lift comes from more conversions, bigger conversions, or both. Treat values as unitless (do not add currency symbols). Reference Conversion P-Value or Value P-Value explicitly without scientific notation.
+3. Decision & Horizon Check: If "Significance Method" is sequential monitoring, a SIGNIFICANT result is valid to act on even before {{TARGET_SAMPLE}} is reached, and the test can be closed. If a result is NOT_SIGNIFICANT and traffic is below target, recommend letting the test run for the "Estimated Days Remaining". If the target is reached and the result is still NOT_SIGNIFICANT, recommend closing the test as inconclusive. If "Significance Method" is fixed horizon and traffic is below target, warn of false-positive (peeking) risk instead. If underpowered (<1000 sample target), note the detection limitation.
+4. Caveats: If "Method Warnings" lists anything, state it plainly. If the Sample Ratio Mismatch Check is SRM_DETECTED, state that the results cannot be trusted until the traffic split is fixed, regardless of significance.
 
 Paragraph 2 - Funnel & User Behavior Dynamics:
 If funnel journey data is provided:
@@ -130,7 +131,7 @@ If no funnel data is present, omit this second paragraph entirely.</td>
     </tr>
     <tr>
       <th scope="row" style="text-align: left;" style="text-align: left;">Experiment Value Parameter</th>
-      <td>Experiment Value Parameter. Used for analyzing "value" significance (ex. revenue).</td>
+      <td>Experiment Value Parameter. Used for analyzing "value" significance (ex. revenue). Can also be an item field, e.g. <code>items.quantity</code> or <code>items.item_revenue</code>.</td>
       <td>value</td>
     </tr>
     <tr>
@@ -170,7 +171,7 @@ If no funnel data is present, omit this second paragraph entirely.</td>
     </tr>
     <tr>
       <th scope="row" style="text-align: left;" style="text-align: left;">BigQuery Table ID</th>
-      <td>The BigQuery table containing your events. Example values in the sheet is specific for the tool selected.</td>
+      <td>The BigQuery table containing your events. Required. <strong>events_fresh_</strong> is the GA4 360 Fresh Daily export. Pick one table per experiment, and keep it for the whole test. See <a href="../../../README.md#137-should-i-use-events_-or-events_fresh_">events_ or events_fresh_?</a></td>
       <td>events_ OR events_fresh_</td>
     </tr>
     <tr>
@@ -185,8 +186,8 @@ If no funnel data is present, omit this second paragraph entirely.</td>
     </tr>
     <tr>
       <th scope="row" style="text-align: left;" style="text-align: left;">Include BigQuery Columns (Field Names)</th>
-      <td>BigQuery columns to include for getting parameters. Columns are matched using RegEx. Adapt this setting to your own needs.</td>
-      <td>^(?:device\.|geo\.|ecommerce\.|stream_id$|platform$)</td>
+      <td>BigQuery columns to include for getting parameters. Columns are matched using RegEx. Adapt this setting to your own needs. Add <code>items\.</code> to use item metrics (e.g. <code>items.quantity</code>, <code>items.item_revenue</code>) as Experiment Value. <code>items.item_params</code> are not supported as value.</td>
+      <td>^(?:device\.|geo\.|ecommerce\.|items\.|stream_id$|platform$)</td>
     </tr>
   </tbody>
 </table>
@@ -255,7 +256,7 @@ If no funnel data is present, omit this second paragraph entirely.</td>
     <tr>
       <th scope="row" style="text-align: left;" style="text-align: left;">BigQuery Table ID</th>
       <td>The BigQuery table containing your events. Example values in the sheet is specific for the tool selected.</td>
-	  <td>e.g., EVENTS_123456</td>
+	  <td>e.g., EVENTS_123456 (the scheduled query adds the <code>deduplicated_</code> prefix)</td>
     </tr>
     <tr>
       <th scope="row" style="text-align: left;" style="text-align: left;">Exclude Events</th>

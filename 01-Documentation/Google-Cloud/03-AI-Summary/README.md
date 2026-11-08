@@ -59,6 +59,16 @@ create or replace model `your-dataset.bigquery_ab_analyzer.gemini_narrator` -- R
   );
 ```
 
+## AI Prompt
+
+The AI Prompt is edited in the [**Settings** sheet](../../Google-Sheet/Settings-Sheet), and exported with **BigQuery A/B Analyzer -> Settings -> Export Settings**. The prompt in the sheet overrides the default prompt in the scheduled query.
+
+Gemini gets the result of the analysis, including the likely range of the lift, value per participant, value per conversion, warnings, Sample Ratio Mismatch check and funnel data. Gemini is also told exactly what the value measures (e.g. *"number of items, counting only items that match the item filters"*), so it doesn't assume that the value is revenue.
+
+## Rate limits
+
+Sometimes Gemini rejects the request with *"Exceeded rate limits: too many concurrent queries that use ML.GENERATE_TEXT"*, even when nothing else is running. The scheduled query then tries again up to 3 times. If it still fails, the analysis is saved and the previous AI Summary is kept.
+
 ## Cost
 
 * The cost of using Gemini for these types of analysis is minimal.

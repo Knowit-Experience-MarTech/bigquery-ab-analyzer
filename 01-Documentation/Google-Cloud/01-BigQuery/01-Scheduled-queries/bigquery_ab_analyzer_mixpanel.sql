@@ -15,10 +15,9 @@
  */
 
  ----------------------------------------------------------------------------------------------------------------------------
-  -- Replace "your_project.your_dataset.mp_master_event" with your project, data set and Mixpanel export table
   -- Replace "your_project" with your project
 
-  -- CHECK REGION: Replace 'region-eu' with 'region-us' if your data is in US
+  -- The source table (project, data set, table) and the BigQuery region come from the sheet settings.
  ----------------------------------------------------------------------------------------------------------------------------
 
 -- Universal Temp Function to format BigQuery JSON paths: $.key for normal, $."key" for spaces/special characters
@@ -41,6 +40,24 @@ begin
   declare conversion_count          int64   default 0;
   declare total_conversion_value    float64 default 0.0;
   declare total_conversion_sq_value float64 default 0.0;
+  declare converter_count          int64   default 0;   -- participants with at least one conversion
+  declare total_conversion_count_sq float64 default 0.0; -- sum over participants of (conversion events)^2
+  -- Sum of squared deviations among converting participants (value and event count). Used for
+  -- numerically stable variances instead of sum(x^2) - sum(x)^2 / n.
+  declare conversion_value_m2      float64 default 0.0;
+  declare conversion_count_m2      float64 default 0.0;
+  -- Value test unit. TRUE: value per participant (non-converters count as 0), recommended primary metric.
+  -- FALSE: value per converting participant (closer to average order value).
+  declare value_per_participant    bool    default true;
+  -- Sample Ratio Mismatch: expected share of participants in variant B (0.5 = 50/50 split).
+  declare srm_expected_share_b     float64 default 0.5;
+  -- Sequential monitoring. TRUE: significance uses an O'Brien-Fleming type boundary based on how much
+  -- of the target sample (ai_total_target_sample, A + B) has been collected, so results stay valid
+  -- when the report is checked every day and the test is stopped as soon as it is SIGNIFICANT.
+  -- FALSE: classic fixed-horizon test (only valid if you look once, at the target sample).
+  declare sequential_monitoring    bool    default true;
+  -- Target sample used when an experiment has none (same default as the AI summary).
+  declare default_target_sample    int64   default 2000;
   
   declare dyn_sql                   string  default "";
   
@@ -60,6 +77,10 @@ begin
   declare id_filter                 string  default '';
   declare conv_side_sql             string;
   declare value_expr                string  default 'null';
+  declare bq_region                 string  default 'region-eu';
+  -- Item filters on the conversion event (per item array), used inside item-level value metrics
+  declare item_filter_list          array<struct<parent_key string, cond string>> default [];
+  declare item_filter_sql           string  default '';
 
   -- Funnel Add-on Variables
   declare funnel_json_str           string  default null;
@@ -136,25 +157,36 @@ begin
       query_info_logging,
       query_price_per_tib, 
       ai_summary_activated, 
-      ai_prompt
+      ai_prompt,
+      bq_region
     ) = (
       select as struct 
         query_information_logging,
         query_price_per_tib,
         ai_summary_activated,
-        trim(ai_prompt)
+        trim(ai_prompt),
+        case 
+          when starts_with(lower(trim(region)), 'region-') then lower(trim(region))
+          -- 'regionnorm' was written by an earlier version of the sheet script; treat it as unset.
+          when region is null or trim(region) = '' or lower(trim(region)) = 'regionnorm' then 'region-eu'
+          else concat('region-', lower(trim(region)))
+        end
       from `your_project.bigquery_ab_analyzer.settings`
+      limit 1
     );
   
     if ai_prompt is null or ai_prompt = '' then
       set ai_prompt = concat(
         'You are a senior CRO and data analytics consultant summarizing A/B test results for an executive dashboard.\n',
-        'Write exactly two concise, highly structured paragraphs of professional prose separated by a single blank line. Do not use rule titles, bullet points, hyphens, or markdown headings.\n\n',
-        'Paragraph 1 — Executive Decision & Statistical Summary:\n',
-        '1. Lead immediately with a clear verdict: Declare the winning variant (or "Inconclusive/No Winner"), state whether it achieved the Required Confidence Level, and quote the exact conversion lift from "Conversion Details".\n',
-        '2. Synthesize business impact: If monetary or mean values are present, evaluate whether the lift is driven by higher conversion volume, higher average order value, or both. Treat total value as a unitless scale metric (do not add currency symbols). Reference Conversion P-Value or Value P-Value explicitly without scientific notation.\n',
-        '3. Decision & Horizon Check: Check sample size against {{TARGET_SAMPLE}} and "Estimated Days Remaining". If traffic is below target, warn of false-positive (peeking) risk and recommend letting the test run for the remaining days. If target is reached (0 days remaining), recommend closing the test. If underpowered (<1000 sample target), note the detection limitation.\n\n',
-        'Paragraph 2 — Funnel & User Behavior Dynamics:\n',
+        'Write exactly two concise, highly structured paragraphs of professional prose separated by a single blank line. Do not use rule titles, bullet points, hyphens, or markdown headings.\n',
+        '\n',
+        'Paragraph 1 - Executive Decision & Statistical Summary:\n',
+        '1. Lead immediately with a clear verdict: Declare the winning variant (or "Inconclusive/No Winner"), state whether it achieved the Required Confidence Level, and quote the exact conversion lift from "Conversion Details" together with the "Conversion Lift Confidence Interval" as its likely range.\n',
+        '2. Synthesize business impact: "Value Metric" describes what the value measures; describe the value exactly that way and do not assume it is revenue, items or anything else. "Value per Participant" includes participants who did not convert and is the main business metric. Use "Value per Conversion" to explain whether a value lift comes from more conversions, bigger conversions, or both. Treat values as unitless (do not add currency symbols). Reference Conversion P-Value or Value P-Value explicitly without scientific notation.\n',
+        '3. Decision & Horizon Check: If "Significance Method" is sequential monitoring, a SIGNIFICANT result is valid to act on even before {{TARGET_SAMPLE}} is reached, and the test can be closed. If a result is NOT_SIGNIFICANT and traffic is below target, recommend letting the test run for the "Estimated Days Remaining". If the target is reached and the result is still NOT_SIGNIFICANT, recommend closing the test as inconclusive. If "Significance Method" is fixed horizon and traffic is below target, warn of false-positive (peeking) risk instead. If underpowered (<1000 sample target), note the detection limitation.\n',
+        '4. Caveats: If "Method Warnings" lists anything, state it plainly. If the Sample Ratio Mismatch Check is SRM_DETECTED, state that the results cannot be trusted until the traffic split is fixed, regardless of significance.\n',
+        '\n',
+        'Paragraph 2 - Funnel & User Behavior Dynamics:\n',
         'If funnel journey data is provided:\n',
         '1. Journey Bottlenecks: Identify the step with the highest drop-off and explain specifically where and how the winning variant outperforms the control (e.g., superior top-of-funnel engagement vs. checkout completion).\n',
         '2. Behavioral Latency: Compare median vs. average step duration. If average time is substantially higher than median time, explicitly explain that a subset of users is delaying action (long-tail delay / return visits).\n',
@@ -185,7 +217,11 @@ begin
       user_count             int64,
       conversion_count       int64,
       total_conversion_value float64,
-      total_conversion_sq_value float64
+      total_conversion_sq_value float64,
+      converter_count        int64,
+      total_conversion_count_sq float64,
+      conversion_value_m2    float64,
+      conversion_count_m2    float64
     );
 
     ---------------------------------------------------------------------------
@@ -209,11 +245,27 @@ begin
         conversion_count_all,
         date_comparison,
         analyze_funnel,
-        funnel_steps
+        funnel_steps,
+        -- Source table coordinates sent from the sheet
+        source_project_id,
+        source_dataset_id,
+        source_table_id
       from `your_project.bigquery_ab_analyzer.experiments`
       where analyze_test = true
         and analytics_tool = 'MIXPANEL' 
     ) do
+
+      -- Stop with a clear message if the sheet has not sent the source table for this experiment.
+      if coalesce(trim(rec.source_project_id), '') = ''
+        or coalesce(trim(rec.source_dataset_id), '') = ''
+        or coalesce(trim(rec.source_table_id), '') = '' then
+        raise using message = concat(
+          'Experiment ', rec.id, ' (variant ', rec.variant, ') has no source table. ',
+          'Check the BigQuery project, data set and table in the sheet settings, then export the experiments to BigQuery again.'
+        );
+      end if;
+
+      set events_table = concat(trim(rec.source_project_id), '.', trim(rec.source_dataset_id), '.', trim(rec.source_table_id));
 
     -------------------------------------------------------------------------
     -- Identity logic
@@ -238,6 +290,7 @@ begin
     -- Reset structural variables
     set exp_filter  = "";
     set conv_filter = "";
+    set item_filter_list = [];
     set sql_header = "";
     set sql_logic = "";
     set sql_footer = "";
@@ -325,6 +378,12 @@ begin
           end if;
           if f.filter_on_value in ('Conversion Event','Both') then
             set conv_filter = conv_filter || concat(' and ', case when is_exclude then 'not ' else '' end, json_event_expr);
+            if has_dot then
+              -- The same filter per item, so item-level value metrics only count matching items.
+              set item_filter_list = array_concat(item_filter_list, [struct(parent_key as parent_key, concat(
+                case when is_exclude then 'not ' else '' end,
+                "regexp_contains(coalesce(json_value(item, '", val_q_child, "'), ''), r'''", replace(f.filter_value, "'''", "\\'\\'\\'"), "''')") as cond)]);
+            end if;
           end if;
         end if;
       end if; 
@@ -348,7 +407,16 @@ begin
          set val_q_parent = format_bq_json_path(val_parent_key);
          set val_q_child = format_bq_json_path(val_child_path);
 
-         set value_expr = concat("(select sum(safe_cast(json_value(item, '", val_q_child, "') as float64)) from unnest(json_extract_array(properties, '", val_q_parent, "')) as item)");
+         -- Only items that match the item filters on the conversion event are counted.
+         set item_filter_sql = coalesce((select string_agg(concat(' and ', x.cond), '') from unnest(item_filter_list) x where x.parent_key = val_parent_key), '');
+         set value_expr = concat(
+           "(select sum(",
+           if(lower(val_child_path) = 'price',
+             -- Item revenue: price x quantity (quantity defaults to 1)
+             concat("safe_cast(json_value(item, '", val_q_child, "') as float64) * coalesce(safe_cast(coalesce(json_value(item, '$.quantity'), json_value(item, '$.Quantity')) as float64), 1)"),
+             concat("safe_cast(json_value(item, '", val_q_child, "') as float64)")),
+           ") from unnest(json_extract_array(properties, '", val_q_parent, "')) as item where true", item_filter_sql, ")"
+         );
       else
          set value_json_path = format_bq_json_path(val_norm_path);
          set value_expr = concat("safe_cast(json_value(properties, '", value_json_path, "') as float64)");
@@ -557,54 +625,43 @@ begin
     -------------------------------------------------------------------------
     -- (4f) Universal Footer
     -------------------------------------------------------------------------
-    if rec.conversion_count_all then
+      -- Every statistic is built from one row per participant (grouping_key), so the
+      -- tests use participants as the unit of analysis, also in "Once per Event" mode.
+      -- conversion_count keeps its old meaning: events in "Once per Event" mode,
+      -- converting participants otherwise.
       set sql_footer = format("""
-        %s
-        %s
-        , joined as (
+          %s
+          %s
+          , joined_raw as (
+            select e.grouping_key, coalesce(c.conv_value, 0) as conv_value
+            from exposures_filtered e
+            join conv_side c using (grouping_key)
+            where c.conv_time >= e.exposure_time
+          )
+          , per_participant as (
+            select
+              grouping_key,
+              count(*) as conv_events,
+              sum(conv_value) as conv_value
+            from joined_raw
+            group by grouping_key
+          )
           select
-            e.grouping_key, 
-            1 as conv_count, 
-            coalesce(c.conv_value, 0) as conv_value, 
-            pow(coalesce(c.conv_value, 0), 2) as conv_sq_value
-          from exposures_filtered e
-          join conv_side c using (grouping_key)
-          where c.conv_time >= e.exposure_time
-        )
-        select
-          (select count(distinct grouping_key) from exposures_filtered) as user_count,
-          coalesce((select sum(conv_count) from joined), 0) as conversion_count,
-          coalesce((select sum(conv_value) from joined), 0.0) as total_conversion_value,
-          coalesce((select sum(conv_sq_value) from joined), 0.0) as total_conversion_sq_value,
-          %s as funnel_json_str
-      """, conv_side_sql, funnel_cte_sql, funnel_select_sql);
-    else
-      set sql_footer = format("""
-        %s
-        %s
-        , joined_raw as (
-          select e.grouping_key, coalesce(c.conv_value, 0) as conv_value
-          from exposures_filtered e
-          join conv_side c using (grouping_key)
-          where c.conv_time >= e.exposure_time
-        )
-        , joined as (
-          select 
-            grouping_key, 
-            1 as conv_count, 
-            sum(conv_value) as conv_value, 
-            pow(sum(conv_value), 2) as conv_sq_value
-          from joined_raw 
-          group by grouping_key
-        )
-        select
-          (select count(distinct grouping_key) from exposures_filtered) as user_count,
-          coalesce((select sum(conv_count) from joined), 0) as conversion_count,
-          coalesce((select sum(conv_value) from joined), 0.0) as total_conversion_value,
-          coalesce((select sum(conv_sq_value) from joined), 0.0) as total_conversion_sq_value,
-          %s as funnel_json_str
-      """, conv_side_sql, funnel_cte_sql, funnel_select_sql);
-    end if;
+            (select count(distinct grouping_key) from exposures_filtered) as user_count,
+            coalesce((select %s from per_participant), 0) as conversion_count,
+            coalesce((select count(*) from per_participant), 0) as converter_count,
+            coalesce((select sum(conv_value) from per_participant), 0.0) as total_conversion_value,
+            coalesce((select sum(pow(conv_value, 2)) from per_participant), 0.0) as total_conversion_sq_value,
+            coalesce((select sum(pow(conv_events, 2)) from per_participant), 0.0) as total_conversion_count_sq,
+            coalesce((select var_samp(conv_value) * (count(*) - 1) from per_participant), 0.0) as conversion_value_m2,
+            coalesce((select var_samp(conv_events) * (count(*) - 1) from per_participant), 0.0) as conversion_count_m2,
+            %s as funnel_json_str
+      """,
+        conv_side_sql,
+        funnel_cte_sql,
+        if(rec.conversion_count_all, 'sum(conv_events)', 'count(*)'),
+        funnel_select_sql
+      );
 
     -------------------------------------------------------------------------
     -- (5) User overlap branches
@@ -757,16 +814,18 @@ begin
     -- (6) Execute
     -------------------------------------------------------------------------
     if dyn_sql is not null and length(dyn_sql) > 0 then
-      execute immediate dyn_sql into user_count, conversion_count, total_conversion_value, total_conversion_sq_value, funnel_json_str;
+      execute immediate dyn_sql into user_count, conversion_count, converter_count, total_conversion_value, total_conversion_sq_value, total_conversion_count_sq, conversion_value_m2, conversion_count_m2, funnel_json_str;
 
         if query_info_logging then
-          insert into bigquery_ab_analyzer_query_information_buffer (id, job_id, bytes_billed)
-          select
-            rec.id,
-            job_id,
-            total_bytes_billed
-          from `region-eu`.INFORMATION_SCHEMA.JOBS_BY_USER
-          where job_id = @@last_job_id;
+          execute immediate format("""
+            insert into bigquery_ab_analyzer_query_information_buffer (id, job_id, bytes_billed)
+            select
+              '%s',
+              job_id,
+              total_bytes_billed
+            from `%s`.INFORMATION_SCHEMA.JOBS_BY_USER
+            where job_id = @@last_job_id
+          """, rec.id, bq_region);
         end if;
 
         -- Funnel Insert Logic
@@ -794,12 +853,14 @@ begin
 
       insert into results (
         id, variant, variant_name, conversion_event, scope, user_overlap,
-        date_start, date_end, user_count, conversion_count, total_conversion_value, total_conversion_sq_value
-      )
-      values (
+        date_start, date_end, user_count, conversion_count, total_conversion_value, total_conversion_sq_value,
+          converter_count, total_conversion_count_sq, conversion_value_m2, conversion_count_m2
+        )
+        values (
         rec.id, rec.variant, rec.variant_name, rec.conversion_event, rec.scope, rec.user_overlap,
-        rec.date_start, rec.date_end, user_count, conversion_count, total_conversion_value, total_conversion_sq_value
-      );
+        rec.date_start, rec.date_end, user_count, conversion_count, total_conversion_value, total_conversion_sq_value,
+          converter_count, total_conversion_count_sq, conversion_value_m2, conversion_count_m2
+        );
     end if;
 
   end for;
@@ -829,10 +890,20 @@ begin
           sum(case when r.variant = 'A' then r.total_conversion_sq_value else 0 end) as total_conversion_sq_value_a,
           sum(case when r.variant = 'B' then r.total_conversion_sq_value else 0 end) as total_conversion_sq_value_b,
 
+          sum(case when r.variant = 'A' then r.converter_count else 0 end) as converter_count_a,
+          sum(case when r.variant = 'B' then r.converter_count else 0 end) as converter_count_b,
+          sum(case when r.variant = 'A' then r.total_conversion_count_sq else 0 end) as total_conversion_count_sq_a,
+          sum(case when r.variant = 'B' then r.total_conversion_count_sq else 0 end) as total_conversion_count_sq_b,
+          sum(case when r.variant = 'A' then r.conversion_value_m2 else 0 end) as conversion_value_m2_a,
+          sum(case when r.variant = 'B' then r.conversion_value_m2 else 0 end) as conversion_value_m2_b,
+          sum(case when r.variant = 'A' then r.conversion_count_m2 else 0 end) as conversion_count_m2_a,
+          sum(case when r.variant = 'B' then r.conversion_count_m2 else 0 end) as conversion_count_m2_b,
+
           max(if(r.variant = 'A', r.conversion_event, null)) as conv_event_a,
           max(if(r.variant = 'B', r.conversion_event, null)) as conv_event_b,
 
           e.confidence as confidence_level,
+          max(e.ai_total_target_sample) as target_sample,
           e.hypothesis,
           e.event_value_test,
           e.analyze_test,
@@ -871,7 +942,16 @@ begin
           total_conversion_value_b,
           total_conversion_sq_value_a,
           total_conversion_sq_value_b,
-        
+          converter_count_a,
+          converter_count_b,
+          total_conversion_count_sq_a,
+          total_conversion_count_sq_b,
+          conversion_value_m2_a,
+          conversion_value_m2_b,
+          conversion_count_m2_a,
+          conversion_count_m2_b,
+          target_sample,
+
           confidence_level,
           hypothesis,
           event_value_test,
@@ -888,7 +968,7 @@ begin
           conversions_counting_mode
         from ab_base
       ),
-      conv as (
+      conv_pre as (
         with base as (
           select
             ab.*,
@@ -920,15 +1000,28 @@ begin
           where is_rate_mode and test_a > 0 and test_b > 0
         ),
         stats_rate as (
+          -- "Once per Event": Welch test on conversion events per participant.
+          -- Replaces the Poisson rate test, which assumes every event is independent and
+          -- gives far too many false positives when some participants convert many times.
           select
             b.id,
-            r.rate_a, r.rate_b, r.z_val, r.p_val, r.significance, r.details
+            w.metric_a as rate_a,
+            w.metric_b as rate_b,
+            w.stat as z_val,
+            w.p_value as p_val,
+            w.significance,
+            replace(replace(w.details, ' is ', ' has '), '% better than', '% more conversion events per participant than') as details
           from valid_rate b
-          cross join unnest([bigquery_ab_analyzer.udf_ab_rate_test(
-            b.test_a, b.conversion_a,
-            b.test_b, b.conversion_b,
-            b.confidence_level, b.hypothesis
-          )]) as r
+          cross join unnest([bigquery_ab_analyzer.udf_ab_count_welch(
+            b.test_a,
+            safe_divide(b.conversion_a, b.test_a),
+            bigquery_ab_analyzer.udf_zero_inflated_variance(b.test_a, b.converter_count_a, b.conversion_a, b.conversion_count_m2_a),
+            b.test_b,
+            safe_divide(b.conversion_b, b.test_b),
+            bigquery_ab_analyzer.udf_zero_inflated_variance(b.test_b, b.converter_count_b, b.conversion_b, b.conversion_count_m2_b),
+            b.confidence_level,
+            b.hypothesis
+          )]) as w
         )
       select
         b.id,
@@ -948,7 +1041,13 @@ begin
         b.conversion_a,
         b.test_b,
         b.conversion_b,
+        b.target_sample,
         b.conversions_counting_mode,
+        b.is_rate_mode,
+        b.converter_count_a,
+        b.converter_count_b,
+        b.conversion_count_m2_a,
+        b.conversion_count_m2_b,
         b.total_conversion_value_a,
         b.total_conversion_value_b,
         coalesce(p.rate_a, r.rate_a) as conv_rate_a,
@@ -956,20 +1055,84 @@ begin
         coalesce(p.z_val, r.z_val) as conv_z_score,
         coalesce(p.p_val, r.p_val) as conv_p_value,
         coalesce(p.significance, r.significance) as conv_significance,
-        coalesce(p.details, r.details) as conv_details
+        coalesce(p.details, r.details) as conv_details,
+        -- Sample Ratio Mismatch check (not evaluated for date comparison, where the split is not randomized).
+        bigquery_ab_analyzer.udf_srm_test(b.test_a, b.test_b, srm_expected_share_b, b.date_comparison) as srm
       from base b
       left join stats_prop p using (id)
       left join stats_rate r using (id)
       ),
+      conv_seq as (
+        select
+          c.*,
+          coalesce(c.target_sample, default_target_sample) as target_sample_used,
+          least(1.0, safe_divide(c.test_a + c.test_b, coalesce(c.target_sample, default_target_sample))) as information_fraction,
+          if(sequential_monitoring,
+            bigquery_ab_analyzer.udf_sequential_alpha(
+              c.confidence_level, c.hypothesis,
+              least(1.0, safe_divide(c.test_a + c.test_b, coalesce(c.target_sample, default_target_sample)))),
+            1 - c.confidence_level / 100) as sequential_alpha
+        from conv_pre c
+      ),
+      conv as (
+        -- A result is only SIGNIFICANT when its p-value is below today's sequential threshold.
+        -- The threshold starts very strict and relaxes as the sample grows toward the target.
+        select * replace (
+          case
+            when sequential_monitoring and conv_significance = 'SIGNIFICANT'
+              and not coalesce(conv_p_value < sequential_alpha, false) then 'NOT_SIGNIFICANT'
+            else conv_significance
+          end as conv_significance,
+          case
+            when sequential_monitoring and conv_significance = 'SIGNIFICANT'
+              and not coalesce(conv_p_value < sequential_alpha, false) then
+              concat('No significant difference (',
+                cast(cast(round(100 * information_fraction) as int64) as string),
+                '% of target).')
+            else conv_details
+          end as conv_details
+        ),
+        -- Confidence interval for the relative lift (B vs A, 0.05 = +5%).
+        bigquery_ab_analyzer.udf_lift_ci(
+          conv_rate_a,
+          if(is_rate_mode,
+            bigquery_ab_analyzer.udf_zero_inflated_variance(test_a, converter_count_a, conversion_a, conversion_count_m2_a),
+            conv_rate_a * (1 - conv_rate_a)),
+          test_a,
+          conv_rate_b,
+          if(is_rate_mode,
+            bigquery_ab_analyzer.udf_zero_inflated_variance(test_b, converter_count_b, conversion_b, conversion_count_m2_b),
+            conv_rate_b * (1 - conv_rate_b)),
+          test_b,
+          ci_z
+        ) as conv_lift_ci
+        from (
+          select
+            *,
+            -- Critical value matching today's significance threshold, so the interval excludes 0
+            -- (approximately) exactly when the result is SIGNIFICANT. For one-sided tests the
+            -- lower bound is the one that matches the test.
+            bigquery_ab_analyzer.udf_normal_upper_quantile(
+              if(lower(trim(coalesce(hypothesis, ''))) in ('one-sided', 'one sided', 'one_sided'),
+                sequential_alpha, sequential_alpha / 2)) as ci_z
+          from conv_seq
+        )
+      ),
       val as (
+        -- value_per_participant = TRUE : n = all participants (non-converters count as 0).
+        -- value_per_participant = FALSE: n = converting participants.
+        -- Values are summed per participant before this point, so repeat purchases by one
+        -- participant are never treated as independent observations.
         select
           ab.id,
-          ab.conversion_a as n_a_value,
-          safe_divide(ab.total_conversion_value_a, nullif(ab.conversion_a,0)) as mean_value_a,
-          safe_divide(ab.total_conversion_sq_value_a - safe_divide(pow(ab.total_conversion_value_a, 2), ab.conversion_a), ab.conversion_a - 1) as var_value_a,
-          ab.conversion_b as n_b_value,
-          safe_divide(ab.total_conversion_value_b, nullif(ab.conversion_b,0)) as mean_value_b,
-          safe_divide(ab.total_conversion_sq_value_b - safe_divide(pow(ab.total_conversion_value_b, 2), ab.conversion_b), ab.conversion_b - 1) as var_value_b,
+          if(value_per_participant, ab.test_a, ab.converter_count_a) as n_value_a,
+          if(value_per_participant, ab.test_b, ab.converter_count_b) as n_value_b,
+          ab.total_conversion_value_a,
+          ab.total_conversion_value_b,
+          ab.converter_count_a,
+          ab.converter_count_b,
+          ab.conversion_value_m2_a,
+          ab.conversion_value_m2_b,
           ab.hypothesis,
           ab.confidence_level,
           ab.analyze_test,
@@ -979,21 +1142,42 @@ begin
           and coalesce(ab.conversion_a, 0) > 0
           and coalesce(ab.conversion_b, 0) > 0
       ),
+      val_stats as (
+        select
+          id,
+          n_value_a,
+          safe_divide(total_conversion_value_a, nullif(n_value_a, 0)) as mean_value_a,
+          if(value_per_participant,
+            bigquery_ab_analyzer.udf_zero_inflated_variance(n_value_a, converter_count_a, total_conversion_value_a, conversion_value_m2_a),
+            safe_divide(conversion_value_m2_a, converter_count_a - 1)) as var_value_a,
+          n_value_b,
+          safe_divide(total_conversion_value_b, nullif(n_value_b, 0)) as mean_value_b,
+          if(value_per_participant,
+            bigquery_ab_analyzer.udf_zero_inflated_variance(n_value_b, converter_count_b, total_conversion_value_b, conversion_value_m2_b),
+            safe_divide(conversion_value_m2_b, converter_count_b - 1)) as var_value_b,
+          hypothesis,
+          confidence_level
+        from val
+      ),
       val_result as (
         select
           v.id,
+          v.n_value_a,
+          v.var_value_a,
+          v.n_value_b,
+          v.var_value_b,
           r.metric_a as mean_value_a,
           r.metric_b as mean_value_b,
           r.stat as t_value,
           r.p_value as value_p_value,
           r.significance as value_significance,
           r.details as value_details
-        from val v
+        from val_stats v
         cross join unnest([bigquery_ab_analyzer.udf_ab_count_welch(
-          v.n_a_value,
+          v.n_value_a,
           v.mean_value_a,
           v.var_value_a,
-          v.n_b_value,
+          v.n_value_b,
           v.mean_value_b,
           v.var_value_b,
           v.confidence_level,
@@ -1025,14 +1209,48 @@ begin
         conv.conv_significance,
         conv.conv_details,
         conv.conversions_counting_mode,
+        conv.srm.p_value as srm_p_value,
+        conv.srm.status as srm_status,
         conv.total_conversion_value_a,
         conv.total_conversion_value_b,
         val_result.mean_value_a,
         val_result.mean_value_b,
         val_result.t_value,
         val_result.value_p_value,
-        val_result.value_significance,
-        if(val_result.value_details is null, 'Not tested', val_result.value_details) AS value_details,
+        case
+          when sequential_monitoring and val_result.value_significance = 'SIGNIFICANT'
+            and not coalesce(val_result.value_p_value < conv.sequential_alpha, false) then 'NOT_SIGNIFICANT'
+          else val_result.value_significance
+        end as value_significance,
+        case
+          when val_result.value_details is null then 'Not tested'
+          when sequential_monitoring and val_result.value_significance = 'SIGNIFICANT'
+            and not coalesce(val_result.value_p_value < conv.sequential_alpha, false) then
+            concat('No significant difference (',
+              cast(cast(round(100 * conv.information_fraction) as int64) as string),
+              '% of target).')
+          else val_result.value_details
+        end as value_details,
+        conv.target_sample_used as target_sample,
+        conv.information_fraction,
+        conv.sequential_alpha,
+        conv.conv_lift_ci.low as conv_lift_ci_low,
+        conv.conv_lift_ci.high as conv_lift_ci_high,
+        bigquery_ab_analyzer.udf_lift_ci(
+          val_result.mean_value_a, val_result.var_value_a, val_result.n_value_a,
+          val_result.mean_value_b, val_result.var_value_b, val_result.n_value_b, conv.ci_z).low as value_lift_ci_low,
+        bigquery_ab_analyzer.udf_lift_ci(
+          val_result.mean_value_a, val_result.var_value_a, val_result.n_value_a,
+          val_result.mean_value_b, val_result.var_value_b, val_result.n_value_b, conv.ci_z).high as value_lift_ci_high,
+        -- Warnings for set-ups where the test assumptions do not hold (results are still calculated).
+        nullif(rtrim(concat(
+          if(upper(trim(coalesce(conv.user_overlap, ''))) = 'CREDIT BOTH',
+            'Credit Both: participants exposed to both variants are counted in both groups, so the groups are not independent and p-values are only approximate. ', ''),
+          if(coalesce(conv.date_comparison, false),
+            'Date comparison: the variants ran in different periods, so a difference can come from seasonality, campaigns or other changes, not only from the variant. ', ''),
+          if(conv.srm.status = 'SRM_DETECTED',
+            'Sample Ratio Mismatch: the traffic split differs from the expected split, so the results should not be trusted until the cause is found. ', '')
+        )), '') as method_warning,
         current_date() as date_last_analyzed
       from conv
       left join val_result using (id)
@@ -1063,6 +1281,16 @@ begin
           conv_significance = source.conv_significance,
           conv_details = source.conv_details,
           conversions_counting_mode = source.conversions_counting_mode,
+        srm_p_value = source.srm_p_value,
+        srm_status = source.srm_status,
+        target_sample = source.target_sample,
+        information_fraction = source.information_fraction,
+        sequential_alpha = source.sequential_alpha,
+        conv_lift_ci_low = source.conv_lift_ci_low,
+        conv_lift_ci_high = source.conv_lift_ci_high,
+        value_lift_ci_low = source.value_lift_ci_low,
+        value_lift_ci_high = source.value_lift_ci_high,
+        method_warning = source.method_warning,
           total_conversion_value_a = source.total_conversion_value_a,
           total_conversion_value_b = source.total_conversion_value_b,
           mean_value_a = source.mean_value_a,
@@ -1094,10 +1322,7 @@ begin
           conv_rate_a,
           conv_rate_b,
           conv_z_score,
-          conv_p_value,
-          conv_significance,
-          conv_details,
-          conversions_counting_mode,
+          conv_p_value, conv_significance, conv_details, conversions_counting_mode, srm_p_value, srm_status, target_sample, information_fraction, sequential_alpha, conv_lift_ci_low, conv_lift_ci_high, value_lift_ci_low, value_lift_ci_high, method_warning,
           total_conversion_value_a,
           total_conversion_value_b,
           mean_value_a,
@@ -1129,10 +1354,7 @@ begin
           source.conv_rate_a,
           source.conv_rate_b,
           source.conv_z_score,
-          source.conv_p_value,
-          source.conv_significance,
-          source.conv_details,
-          source.conversions_counting_mode,
+          source.conv_p_value, source.conv_significance, source.conv_details, source.conversions_counting_mode, source.srm_p_value, source.srm_status, source.target_sample, source.information_fraction, source.sequential_alpha, source.conv_lift_ci_low, source.conv_lift_ci_high, source.value_lift_ci_low, source.value_lift_ci_high, source.method_warning,
           source.total_conversion_value_a,
           source.total_conversion_value_b,
           source.mean_value_a,
@@ -1148,124 +1370,183 @@ begin
     -- (9) BUFFER THE MERGE COST
     ----------------------------------------------------------------------------
     if query_info_logging then
-      insert into bigquery_ab_analyzer_query_information_buffer (id, job_id, bytes_billed)
-      select
-        active_exps.id,
-        jobs.job_id,
-        cast(jobs.total_bytes_billed / active_exps.exp_count as int64)
-      from `region-eu`.INFORMATION_SCHEMA.JOBS_BY_USER as jobs
-      cross join (
-        select id, count(*) over() as exp_count 
-        from (select distinct id from bigquery_ab_analyzer_query_information_buffer)
-      ) as active_exps
-      where jobs.job_id = @@last_job_id;
+      execute immediate format("""
+        insert into bigquery_ab_analyzer_query_information_buffer (id, job_id, bytes_billed)
+        select
+          active_exps.id,
+          jobs.job_id,
+          cast(jobs.total_bytes_billed / active_exps.exp_count as int64)
+        from `%s`.INFORMATION_SCHEMA.JOBS_BY_USER as jobs
+        cross join (
+          select id, count(*) over() as exp_count 
+          from (select distinct id from bigquery_ab_analyzer_query_information_buffer)
+        ) as active_exps
+        where jobs.job_id = @@last_job_id
+      """, bq_region);
     end if;
 
     ----------------------------------------------------------------------------
     -- (10) GENERATE AI NARRATIVES
     ----------------------------------------------------------------------------
     if ai_summary_activated then
-      update `your_project.bigquery_ab_analyzer.experiments_report` dest
-        set ai_summary = ai.ml_generate_text_llm_result
-        from (
-          select
-            id,
-            ml_generate_text_llm_result
-          from ML.GENERATE_TEXT(
-            model `your_project.bigquery_ab_analyzer.gemini_narrator`,
-            (
-              select 
-                rep.id,
-                concat(
-                  replace(ai_prompt, '{{TARGET_SAMPLE}}', cast(coalesce(exp.ai_total_target_sample, 2000) as string)),
-                  '\n\nDATA:\n',
-                  'Experiment Name: ', coalesce(rep.experiment_name, 'N/A'), '. ',
-                  'Hypothesis: ', coalesce(rep.hypothesis, 'N/A'), '. ',
-                  '--- EXPERIMENT METADATA --- ',
-                  'Required Confidence Level: ', coalesce(cast(rep.confidence_level as string), 'N/A'), '%. ',
-                  'Is Date Comparison Analysis?: ', coalesce(cast(rep.date_comparison as string), 'N/A'), '. ',
-                  'Days Running: ', coalesce(cast(date_diff(rep.date_end, rep.date_start, day) + 1 as string), 'N/A'), ' days. ',
-                  'Target Sample Size: ', cast(coalesce(exp.ai_total_target_sample, 2000) as string), '. ',
-                  'Estimated Days Remaining to hit Target: ', 
-                    coalesce(cast(
-                      ceil(
-                        greatest(0, coalesce(exp.ai_total_target_sample, 2000) - (rep.test_a + rep.test_b)) 
-                        / 
-                        nullif((rep.test_a + rep.test_b) / (date_diff(rep.date_end, rep.date_start, day) + 1), 0)
-                      ) 
-                  as string), 'N/A'), ' days. ',
+      -- Gemini sometimes refuses a request with "too many concurrent queries", even when nothing else
+      -- is running. Such a refusal comes back at once, so try up to 3 times. If it still fails, keep the
+      -- previous summaries and let the run succeed; the statistics are already saved.
+      begin
+        declare ai_attempt int64 default 0;
+        declare ai_done bool default false;
+
+        while not ai_done and ai_attempt < 3 do
+          set ai_attempt = ai_attempt + 1;
+          begin
+            update `your_project.bigquery_ab_analyzer.experiments_report` dest
+              set ai_summary = ai.ml_generate_text_llm_result
+              from (
+                select
+                  id,
+                  ml_generate_text_llm_result
+                from ML.GENERATE_TEXT(
+                  model `your_project.bigquery_ab_analyzer.gemini_narrator`,
+                  (
+                    select 
+                      rep.id,
+                      concat(
+                        replace(ai_prompt, '{{TARGET_SAMPLE}}', cast(coalesce(exp.ai_total_target_sample, 2000) as string)),
+                        '\n\nDATA:\n',
+                        'Experiment Name: ', coalesce(rep.experiment_name, 'N/A'), '. ',
+                        'Hypothesis: ', coalesce(rep.hypothesis, 'N/A'), '. ',
+                        '--- EXPERIMENT METADATA --- ',
+                        'Method Warnings: ', coalesce(rep.method_warning, 'None.'), ' ',
+                        'Required Confidence Level: ', coalesce(cast(rep.confidence_level as string), 'N/A'), '%. ',
+                        'Is Date Comparison Analysis?: ', coalesce(cast(rep.date_comparison as string), 'N/A'), '. ',
+                        'Days Running: ', coalesce(cast(date_diff(rep.date_end, rep.date_start, day) + 1 as string), 'N/A'), ' days. ',
+                        'Target Sample Size: ', cast(coalesce(exp.ai_total_target_sample, 2000) as string), '. ',
+                        if(sequential_monitoring,
+                          concat('Significance Method: sequential monitoring. Share of target sample collected: ',
+                            coalesce(cast(cast(round(100 * rep.information_fraction) as int64) as string), 'N/A'),
+                            '%. Current p-value threshold: ', case
+                              when rep.sequential_alpha is null then 'N/A'
+                              when rep.sequential_alpha < 0.0001 then '0.0001 or lower'
+                              else format('%.4f', rep.sequential_alpha)
+                            end,
+                            '. SIGNIFICANT results are valid to act on now. '),
+                          'Significance Method: fixed horizon (results are only valid at the target sample). '),
+                        'Estimated Days Remaining to hit Target: ', 
+                          coalesce(cast(
+                            ceil(
+                              greatest(0, coalesce(exp.ai_total_target_sample, 2000) - (rep.test_a + rep.test_b)) 
+                              / 
+                              nullif((rep.test_a + rep.test_b) / (date_diff(rep.date_end, rep.date_start, day) + 1), 0)
+                            ) 
+                        as string), 'N/A'), ' days. ',
                   
-                  '--- SAMPLE SIZE --- ',
-                  'Variant A Traffic: ', coalesce(cast(rep.test_a as string), '0'), ', ',
-                  'Variant B Traffic: ', coalesce(cast(rep.test_b as string), '0'), '. ',
-                  '--- CONVERSION RATE --- ',
-                  'Variant A Rate: ', coalesce(cast(rep.conv_rate_a as string), 'N/A'), ', ',
-                  'Variant B Rate: ', coalesce(cast(rep.conv_rate_b as string), 'N/A'), ', ',
-                  'Rate Significant?: ', coalesce(cast(rep.conv_significance as string), 'N/A'), ', ',
-                  'Conversion Z-Score: ', coalesce(format('%.4f', rep.conv_z_score), 'N/A'), ', ',
-                  'Conversion P-Value: ', coalesce(format('%.4f', rep.conv_p_value), 'N/A'), '. ',
-                  'Conversion Details: ', coalesce(rep.conv_details, 'N/A'), '. ',
+                        '--- SAMPLE SIZE --- ',
+                        'Variant A Traffic: ', coalesce(cast(rep.test_a as string), '0'), ', ',
+                        'Variant B Traffic: ', coalesce(cast(rep.test_b as string), '0'), '. ',
+                        'Sample Ratio Mismatch Check: ', coalesce(rep.srm_status, 'N/A'),
+                          ' (p-value ', if(rep.srm_p_value is null, 'N/A', format('%.4f', rep.srm_p_value)), '; SRM_DETECTED means the traffic split is broken and the results should not be trusted). ',
+                        '--- CONVERSION RATE --- ',
+                        'Variant A Rate: ', coalesce(cast(rep.conv_rate_a as string), 'N/A'), ', ',
+                        'Variant B Rate: ', coalesce(cast(rep.conv_rate_b as string), 'N/A'), ', ',
+                        'Rate Significant?: ', coalesce(cast(rep.conv_significance as string), 'N/A'), ', ',
+                        'Conversion Z-Score: ', coalesce(format('%.4f', rep.conv_z_score), 'N/A'), ', ',
+                        'Conversion P-Value: ', coalesce(format('%.4f', rep.conv_p_value), 'N/A'), '. ',
+                        'Conversion Details: ', coalesce(rep.conv_details, 'N/A'), '. ',
+                        'Conversion Lift Confidence Interval: ',
+                          if(rep.conv_lift_ci_low is null, 'N/A',
+                            format('%.1f%% to %.1f%%', 100 * rep.conv_lift_ci_low, 100 * rep.conv_lift_ci_high)), '. ',
                   
-                  '--- MEAN VALUE & TOTAL VALUE --- ',
-                  'Variant A Total Value: ', coalesce(format('%.2f', rep.total_conversion_value_a), 'N/A'), ', ',
-                  'Variant B Total Value: ', coalesce(format('%.2f', rep.total_conversion_value_b), 'N/A'), ', ',
-                  'Variant A Mean Value: ', coalesce(format('%.2f', rep.mean_value_a), 'N/A'), ', ',
-                  'Variant B Mean Value: ', coalesce(format('%.2f', rep.mean_value_b), 'N/A'), ', ',
-                  'Value Significant?: ', coalesce(cast(rep.value_significance as string), 'N/A'), ', ',
-                  'Value T-Value: ', coalesce(format('%.4f', rep.t_value), 'N/A'), ', ',
-                  'Value P-Value: ', coalesce(format('%.4f', rep.value_p_value), 'N/A'), '. ',
-                  'Value Details: ', coalesce(rep.value_details, 'N/A'), '.\n\n',
+                        '--- VALUE --- ',
+                        'Value Metric: ',
+                          case
+                            when nullif(trim(exp.value_parameter), '') is null then 'N/A'
+                            when regexp_contains(trim(exp.value_parameter), r'\.') and lower(regexp_extract(trim(exp.value_parameter), r'\.\s*([^.]+)$')) = 'quantity' then
+                              'number of items, counting only items that match the item filters on the conversion event'
+                            when regexp_contains(trim(exp.value_parameter), r'\.') and lower(regexp_extract(trim(exp.value_parameter), r'\.\s*([^.]+)$')) = 'price' then
+                              'item revenue (price x quantity), counting only items that match the item filters on the conversion event'
+                            when regexp_contains(trim(exp.value_parameter), r'\.') then
+                              concat('the item field "', trim(exp.value_parameter), '", counting only items that match the item filters on the conversion event')
+                            else concat('the "', trim(exp.value_parameter), '" parameter of the ', coalesce(rep.conversion_event, 'conversion'), ' event')
+                          end, '. ',
+                        'Variant A Total Value: ', coalesce(format('%.2f', rep.total_conversion_value_a), 'N/A'), ', ',
+                        'Variant B Total Value: ', coalesce(format('%.2f', rep.total_conversion_value_b), 'N/A'), ', ',
+                        'Variant A Value per Participant: ', if(rep.mean_value_a is null, 'N/A', format('%.2f', rep.mean_value_a)), ', ',
+                        'Variant B Value per Participant: ', if(rep.mean_value_b is null, 'N/A', format('%.2f', rep.mean_value_b)), ', ',
+                        'Variant A Value per Conversion: ', if(coalesce(rep.conversion_a, 0) = 0 or rep.total_conversion_value_a is null, 'N/A', format('%.2f', rep.total_conversion_value_a / rep.conversion_a)), ', ',
+                        'Variant B Value per Conversion: ', if(coalesce(rep.conversion_b, 0) = 0 or rep.total_conversion_value_b is null, 'N/A', format('%.2f', rep.total_conversion_value_b / rep.conversion_b)), ', ',
+                        'Value Significant?: ', coalesce(cast(rep.value_significance as string), 'N/A'), ', ',
+                        'Value T-Value: ', coalesce(format('%.4f', rep.t_value), 'N/A'), ', ',
+                        'Value P-Value: ', coalesce(format('%.4f', rep.value_p_value), 'N/A'), '. ',
+                        'Value Details: ', coalesce(rep.value_details, 'N/A'), '. ',
+                        'Value Lift Confidence Interval: ',
+                          if(rep.value_lift_ci_low is null, 'N/A',
+                            format('%.1f%% to %.1f%%', 100 * rep.value_lift_ci_low, 100 * rep.value_lift_ci_high)), '.\n\n',
                   
-                  '\n\n--- FUNNEL JOURNEY DATA ---\n',
-                  coalesce(funnel.funnel_text, 'No funnel tracking activated for this test.')
-                ) as prompt
-              from `your_project.bigquery_ab_analyzer.experiments_report` rep
-              join (
-                select id, max(ai_total_target_sample) as ai_total_target_sample
-                from `your_project.bigquery_ab_analyzer.experiments`
-                where analyze_test = true group by id
-              ) exp on rep.id = exp.id 
-              left join (
-                select 
-                  id, 
-                  string_agg(
-                    format('Variant %s, Step %d (%s): %d users. Drop-off: %.1f%%. Median time: %.1f sec. Average time: %.1f sec.', 
-                      variant, step_number, step_name, participants, 
-                      coalesce(drop_off_rate_from_previous * 100, 0.0), 
-                      coalesce(median_time_from_previous_sec, 0.0), 
-                      coalesce(avg_time_from_previous_sec, 0.0)
-                    ),
-                    '\n' order by variant, step_number
-                  ) as funnel_text
-                from `your_project.bigquery_ab_analyzer.experiments_funnel_report`
-                group by id
-              ) funnel on rep.id = funnel.id
-            ),
-            struct(
-              0.2 as temperature, 
-              4096 as max_output_tokens,
-              TRUE as flatten_json_output
-            )
-          )
-        ) as ai
-        where dest.id = ai.id;
+                        '\n\n--- FUNNEL JOURNEY DATA ---\n',
+                        coalesce(funnel.funnel_text, 'No funnel tracking activated for this test.')
+                      ) as prompt
+                    from `your_project.bigquery_ab_analyzer.experiments_report` rep
+                    join (
+                      select id, max(ai_total_target_sample) as ai_total_target_sample, max(experiment_event_value_parameter) as value_parameter
+                      from `your_project.bigquery_ab_analyzer.experiments`
+                      where analyze_test = true
+                        and analytics_tool = 'MIXPANEL' -- only this tool's experiments, so the tools never summarize the same rows
+                      group by id
+                    ) exp on rep.id = exp.id 
+                    left join (
+                      select 
+                        id, 
+                        string_agg(
+                          format('Variant %s, Step %d (%s): %d users. Drop-off: %.1f%%. Median time: %.1f sec. Average time: %.1f sec.', 
+                            variant, step_number, step_name, participants, 
+                            coalesce(drop_off_rate_from_previous * 100, 0.0), 
+                            coalesce(median_time_from_previous_sec, 0.0), 
+                            coalesce(avg_time_from_previous_sec, 0.0)
+                          ),
+                          '\n' order by variant, step_number
+                        ) as funnel_text
+                      from `your_project.bigquery_ab_analyzer.experiments_funnel_report`
+                      group by id
+                    ) funnel on rep.id = funnel.id
+                  ),
+                  struct(
+                    0.2 as temperature, 
+                    4096 as max_output_tokens,
+                    TRUE as flatten_json_output
+                  )
+                )
+              ) as ai
+              where dest.id = ai.id;
         
-      ----------------------------------------------------------------------------
-      -- (10b) BUFFER THE AI UPDATE COST
-      ----------------------------------------------------------------------------
-      if query_info_logging then
-        insert into bigquery_ab_analyzer_query_information_buffer (id, job_id, bytes_billed)
-      select
-        active_exps.id,
-        jobs.job_id,
-        cast(jobs.total_bytes_billed / active_exps.exp_count as int64)
-      from `region-eu`.INFORMATION_SCHEMA.JOBS_BY_USER as jobs
-      cross join (
-        select id, count(*) over() as exp_count 
-        from (select distinct id from bigquery_ab_analyzer_query_information_buffer)
-      ) as active_exps
-      where jobs.job_id = @@last_job_id;
-      end if;
+            ----------------------------------------------------------------------------
+            -- (10b) BUFFER THE AI UPDATE COST
+            ----------------------------------------------------------------------------
+            if query_info_logging then
+              execute immediate format("""
+                insert into bigquery_ab_analyzer_query_information_buffer (id, job_id, bytes_billed)
+              select
+                active_exps.id,
+                jobs.job_id,
+                cast(jobs.total_bytes_billed / active_exps.exp_count as int64)
+              from `%s`.INFORMATION_SCHEMA.JOBS_BY_USER as jobs
+              cross join (
+                select id, count(*) over() as exp_count 
+                from (select distinct id from bigquery_ab_analyzer_query_information_buffer)
+              ) as active_exps
+                where jobs.job_id = @@last_job_id
+              """, bq_region);
+            end if;
+
+            set ai_done = true;
+          exception when error then
+            if ai_attempt >= 3
+              or not regexp_contains(lower(@@error.message), r'rate limit|quota|concurrent|resources exceeded|try again') then
+              set ai_attempt = 3;
+              select concat('AI summary skipped this run: ', @@error.message) as ai_summary_warning;
+            end if;
+          end;
+        end while;
+      end;
     end if;
 
     ----------------------------------------------------------------------------

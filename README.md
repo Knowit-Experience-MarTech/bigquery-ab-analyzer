@@ -30,7 +30,8 @@ The solution is built around **Google Sheet**, **BigQuery**, **Vertex AI** and *
 3. [Data Studio / presenting results](01-Documentation/Data-Studio)
 
 ## 3. Upgrading
-* [v2.3 is latest version](../../releases/tag/v2.31).
+* [v2.4 is latest version](../../releases/tag/v2.4).
+* [How to upgrade to v2.4](03-Releases/v2.4).
 
 ## 4. The "Backbone": Configuration-Driven Architecture
 
@@ -83,7 +84,7 @@ This solution allows you to toggle between three distinct counting methods:
 3. **Total Event Rate (Count All Conversions)**:
 	* *Question*: "How many times did this action happen *per user*?"
 	* In this mode, the result is an **Event Rate**, not a probability. It could be perfectly normal to see a rate of 150%. This simply means the average user performed the action 1.5 times.
-	* *Math*: The solution switches statistical gears here. Instead of a standard Z-test for proportions, it uses a **Z-Test for Poisson Rates** to accurately compare the intensity of user behavior, not just the presence of it.
+	* *Math*: The solution switches statistical gears here. Instead of a standard Z-test for proportions, it uses **Welch's t-test** on the number of conversions per participant, to accurately compare the intensity of user behavior, not just the presence of it.
 	* *Best for*: Media consumption (Videos watched per user), E-commerce (Items added to cart), or Gaming (Levels played).
 	
 #### Why this distinction is critical
@@ -94,6 +95,25 @@ If you only measure "Did they click?", you might miss a huge win.
 	* *Standard Tool Result*: "No Difference".
 * **Reality**: In Variant B, those users watched 5 videos each, whereas in Variant A they only watched 1.
 	* *This Solution's Result*: "Variant B has a 400% higher Event Rate per User".
+
+### Item Metrics: Items sold and item revenue
+
+The value test can also measure **items** instead of the event value. This answers questions like *"Did variant B sell more items from category X, and did the item revenue increase?"*
+
+1. Add an item filter on the **conversion event**, e.g. `items.item_category` = `^Shoes$`.
+2. Set **Experiment Value** to an item field:
+	* `items.quantity`: Number of items sold.
+	* `items.item_revenue`: Item revenue. If `item_revenue` is missing, `price × quantity` is used.
+
+Only items matching the item filter are counted. A basket with 1 pair of shoes and 3 shirts counts 1 item and the revenue of the shoes.
+
+You then get 3 answers from 2 experiments (copy the experiment and change **Experiment Value** in the copy):
+
+* **Conversion test**: Did B get more participants to buy something from the category?
+* **Value test with `items.quantity`**: Did B sell more items from the category per participant?
+* **Value test with `items.item_revenue`**: Did B bring in more revenue from the category per participant?
+
+Item metrics are supported for all tools. For Amplitude, Mixpanel and PostHog, use the item price field (e.g. `products.price`). Price is multiplied by quantity.
 
 ### User Flexibility: You define what a user is
 
@@ -109,6 +129,7 @@ The framework supports 4 different methods for identifying/analysing users:
 * **AI Summary** is powered by [**Gemini**](https://docs.cloud.google.com/vertex-ai/generative-ai/docs/models). Gemini is interpreting the test, and summarises the result with recommendations.
 * Gemini is only interpreting the result, so the size of the data analysed will not affect the cost.
 * AI Prompt can be edited in Google Sheet.
+* Gemini is told exactly what the value measures (e.g. revenue or items sold), and gets the likely range, warnings and Sample Ratio Mismatch check.
 * AI Summary functionality is optional.
 
 ### Funnel Analysis: Identifying Drop-off Points
@@ -134,18 +155,47 @@ The framework supports multi-step funnel analysis to visualize the user journey 
 
 This is where the "magic" happens. The solution does not just count clicks; it uses a set of custom **User Defined Functions** (UDFs) in BigQuery to determine mathematical certainty based on the data type.
 
+All tests are done **per participant** (user or session). A user with 5 purchases is one participant with 5 conversions, not 5 independent observations.
+
 1. **For User Conversion (Proportions)**
 	* *Method*: [Two-Proportion Z-Test](https://en.wikipedia.org/wiki/Two-proportion_Z-test) (Pooled Variance). Chosen for its objectivity and efficiency at Big Data scale. It provides clear P-values without the computational overhead of Bayesian simulations.
 	* *Use Case*: Answering "Did more people sign up?" (Yes/No metrics).
-	* *How it works*: Used when Scope = USER or SESSION. It calculates a Z-score to measure the difference between two probabilities, strictly capped at 100%.
+	* *How it works*: Used when **Count All Conversions** is not ticked. It calculates a Z-score to measure the difference between two probabilities, strictly capped at 100%.
 2. **For Event Frequency (Intensity)**
-	* *Method*: [Z-Test for Poisson Rates](https://www.statsdirect.com/help/rates/compare_crude_incidence_rates.htm) (using Log-Linear approximation).
+	* *Method*: [Welch's t-test](https://en.wikipedia.org/wiki/Welch%27s_t-test) on the number of conversions per participant.
 	* *Use Case*: Answering "Did users watch more videos?" or "Did they add more items to the cart?"
-	* *How it works*: Used when Scope = EVENT and  metrics can exceed 100% (e.g., 2.5 plays per user). The Incidence Rate Ratio method is specifically designed for Count Data (Poisson-like distributions) to accurately compare the intensity of user behavior.
+	* *How it works*: Used when **Count All Conversions** is ticked, and metrics can exceed 100% (e.g., 2.5 plays per user). Because the test is done per participant, a few heavy users can't create a significant result alone.
 3. **For Continuous Metrics (Values)**
-	* *Method*: [Welch’s t-test](https://en.wikipedia.org/wiki/Welch%27s_t-test).
+	* *Method*: [Welch's t-test](https://en.wikipedia.org/wiki/Welch%27s_t-test), with p-values from the Student t distribution.
 	* *Use Case*: Answering "Did users spend more money?" or "Did page load time decrease?"
-	* *Why Welch's?* Standard t-tests assume both groups have the same variance (spread). In real user data, this is rarely true (e.g., a few "whales" spend a lot). Welch’s t-test is designed to be reliable even when groups have unequal variances and unequal sample sizes.
+	* *What is compared*: **Value per participant**. Participants without a conversion count as 0. This answers "Which variant brings in more value per user/session?". **Value per conversion** (average order value) is used by the AI Summary to explain if the lift comes from more conversions, bigger conversions or both.
+	* *Why Welch's?* Standard t-tests assume both groups have the same variance (spread). In real user data, this is rarely true (e.g., a few "whales" spend a lot). Welch's t-test is designed to be reliable even when groups have unequal variances and unequal sample sizes.
+
+### Sequential Monitoring: Check the results every day
+
+Most people look at A/B test results while the test is running. With a classic (fixed horizon) test, stopping the moment you see "Significant" increases the risk of a **False Positive**.
+
+This solution uses **sequential monitoring** (an O'Brien-Fleming type boundary). The p-value needed to declare a winner depends on how much of the **Total target sample** has been collected:
+
+* Early in the test, the bar is high. Only very clear results are SIGNIFICANT.
+* At the target sample, the bar is close to the normal confidence level (e.g. 95%).
+* A SIGNIFICANT result is valid to act on, even before the target sample is reached. You can stop the test.
+
+When a result has a low p-value, but not low enough yet, the details text explains it, e.g. *"No significant difference (26% of target)."* The required p-value is stored in `sequential_alpha`, and is given to the AI Summary.
+
+Sequential monitoring can be turned off in the scheduled query.
+
+### Likely Range (Confidence Interval)
+
+The lift is reported with a **likely range**, e.g. *+7.1% (likely range +4.4% to +9.8%)*. The likely range is used by the AI Summary, and is available in BigQuery and Data Studio.
+
+### Quality Checks and Warnings
+
+* **Sample Ratio Mismatch (SRM)**: Checks if the traffic split between A and B is what you expect (50/50 as default). If the split is broken (p < 0.001), the result should not be trusted, regardless of significance.
+* **Warnings**: Explains when the test assumptions do not hold. The results are still calculated.
+	* **Credit Both**: Participants exposed to both variants are counted in both groups, so the groups are not independent.
+	* **Date comparison**: The variants ran in different periods, so a difference can also come from seasonality, campaigns or other changes.
+	* **Sample Ratio Mismatch**.
 
 ### Automatic Significance Detection 
 
@@ -200,14 +250,17 @@ Image below illustrates the setup.
 ## 13. FAQ
 
 ### 13.1. Can I "peek" at the results before the test is finished?
-**Technically, yes, but proceed with caution**. Because this framework uses a **Fixed-Horizon** Frequentist model (Z-test), looking at the results daily and stopping the moment you see "Significant" increases the risk of a **False Positive** ([Type 1 error](https://en.wikipedia.org/wiki/Type_I_and_type_II_errors)). If you need to make a decision early, ensure you have reached your **Minimum Detectable Effect (MDE)** or a sufficient sample size first. Use the **Pre-Test Calculator** to figure out the sample size.
+**Yes**. The framework uses **sequential monitoring**, which is designed for checking the results every day. A SIGNIFICANT result is valid to act on, even before the target sample is reached. Early in the test, the p-value needed is much lower than normal, so only very clear results are SIGNIFICANT. See [Sequential Monitoring](#sequential-monitoring-check-the-results-every-day).
+
+Sequential monitoring only works if **Total target sample** is set for the experiment. If sequential monitoring is turned off in the scheduled query, the test is a classic **Fixed-Horizon** test, and looking at the results daily increases the risk of a **False Positive** ([Type 1 error](https://en.wikipedia.org/wiki/Type_I_and_type_II_errors)).
 
 ### 13.2. How do I know when the sample size is "enough"?
-Statistical significance alone isn't a "stop" sign. You should define your target sample size before you run the analysis using **Pre-Test Calculator**.
+Define your target sample size before you run the analysis using **Pre-Test Calculator**, and add about **20%**. Sequential monitoring needs a slightly larger sample than a fixed horizon test to detect the same effect.
 
 * **Small changes** require many users.
-* **Big changes** (e.g., a completely new UI) require fewer. This solution provides the mathematical confidence, but we recommend using a "Fixed Horizon". “Fixed horizon” means either a specific sample size or a specific duration.
-* If you activate **AI Summary**, you set **Total target sample** in the **Settings** sheet. Then AI may use this information in the recommendation.
+* **Big changes** (e.g., a completely new UI) require fewer.
+* Set **Total target sample** for the experiment. It is used both by sequential monitoring and by **AI Summary**.
+* If the target sample is reached and the result is still NOT_SIGNIFICANT, close the test as inconclusive.
 
 ### 13.3. Why doesn’t this solution use Bayesian "Probability of Winning"?
 Bayesian models are good for storytelling ("There is a 92% chance B is better than A"), but they are computationally expensive to run in a data warehouse. The **Two-Proportion Z-Test** was chosen because it is statistically equivalent for making business decisions while being much faster to compute in BigQuery. It allows you to analyze massive datasets without the "cost-creep" associated with more complex simulations.
@@ -237,12 +290,34 @@ If you need to analyse more than 2 variants, you must do this as individual anal
 * A vs. C
 * B vs. C
 	
+### 13.7. Should I use events_ or events_fresh_?
+GA4 360 properties can use the [**Fresh Daily**](https://support.google.com/analytics/answer/15604391) export (`events_fresh_`) in addition to the daily export (`events_`). You select the table in **BigQuery Table ID** in the **Settings** sheet.
+
+The 2 tables will not give exactly the same numbers. Google states that the difference is often as low as 2%. In a test with both tables, the conclusion was the same, but the numbers differed by about 3%.
+
+**Recommendation**: Both work well for A/B analysis. An A/B test compares A with B, and the difference between the tables affects both variants about equally.
+
+* **events_fresh_** is the more complete version. It is rebuilt once a day with finalized sessions and user data, and is normally complete by 5 AM. Use it if you have it.
+* **events_** is available for all GA4 properties, and is the default.
+* **Pick one table per experiment, and keep it for the whole test.** Switching table while the test is running can move the numbers by a few percent for reasons that have nothing to do with the test.
+* Don't compare absolute numbers between reports that use different tables.
+
+Things to know about **events_fresh_**:
+* Only available for GA4 360 properties (Normal and Large, not XL).
+* Google has no Service Level Agreement (SLA) for the Fresh Daily export.
+* Traffic source for recent Google Ads events may show "Data Not Available", because the export can run before Google Ads attribution is finished. This only matters if you filter on traffic source.
+
+### 13.8. What does the Warnings column mean?
+The **Warnings** column explains when the test assumptions do not hold: **Credit Both**, **date comparison** or **Sample Ratio Mismatch**. The results are still calculated, but should be interpreted with care. If **Sample Ratio Mismatch** is detected, fix the traffic split before you trust the result.
+
 ## 14. Summary of Benefits
 
 * **Democratized access**: Define tests in a Google Sheet, not in SQL. Share the results in Data Studio.
-* **Standardized math**: Consistent statistical methods
+* **Standardized math**: Consistent statistical methods, per participant
+* **Sequential monitoring**: Check the results every day without increasing the risk of false positives
+* **Quality checks**: Sample Ratio Mismatch check and warnings
 * **Scalable execution**: Analyze many experiments without rewriting queries
-* **Flexible metrics**: Conversion, session rates, event intensity, continuous values
+* **Flexible metrics**: Conversion, session rates, event intensity, continuous values, items sold and item revenue
 * **Funnel Analysis**: Multi-step journey tracking and drop-off analysis
 * **Better data hygiene**: Overlap handling + filters built in
 * **Works with your stack**: GA4, Firebase, GA4Dataform, Amplitude, Mixpanel, PostHog

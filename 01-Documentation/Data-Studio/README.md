@@ -29,6 +29,26 @@ The following **Data Sources** are used by Data Studio:
 5. experiments_links
 6. experiments_funnel_report
 
+## Warnings and Likely Range
+
+The **experiments_report** data source has fields that are not shown in the report as default. These are recommended:
+
+### Warnings
+
+Shows a warning when the test assumptions do not hold (Credit Both, date comparison or Sample Ratio Mismatch). Most experiments have no warning, so the chart is only filled when there is something to warn about.
+
+1. Add a **Table** with **method_warning** as the only dimension, and no metric.
+2. Add a **filter** to the chart: **Exclude** where **method_warning** **Is Null**. Only rows with a warning are shown.
+3. Hide the header, and style it as a note (e.g. yellow background). Place it under the Conversion Analysis and Event Value banners.
+
+### Likely Range
+
+Shows the likely range of the lift, next to Z-Score/P-Value and T-Value/P-Value.
+
+1. Create the calculated fields [**Conversion Likely Range \[Calc\]**](Calculated-Fields/README.md#conversion-likely-range-calc) and [**Value Likely Range \[Calc\]**](Calculated-Fields/README.md#value-likely-range-calc).
+2. Add a **Table** for each field, with the field as the only dimension. Each experiment has one row per variant with the same range, so the table shows one row.
+3. Label it **Likely range**.
+
 ## Calculated Fields
 
 * [All Calculated Fields](Calculated-Fields) used in Data Studio.

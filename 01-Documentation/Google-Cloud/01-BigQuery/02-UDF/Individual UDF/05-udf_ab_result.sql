@@ -27,10 +27,10 @@ returns
 			rate_b,
 			z_val,
 			p_val,
-			case 
-				when p_val < alpha then 
-				'SIGNIFICANT' else 
-				'NOT_SIGNIFICANT' 
+			case
+				when p_val is null then 'NOT_EVALUATED'
+				when p_val < alpha then 'SIGNIFICANT'
+				else 'NOT_SIGNIFICANT'
 			end as significance,
 			case
 				when p_val < alpha and rate_a > rate_b then
@@ -41,6 +41,7 @@ returns
 					concat('Variant B is better than Variant A by ',
 					cast(round(100 * safe_divide(rate_b - rate_a, nullif(rate_a,0)), 2) as string),
 					'%.')
+				when p_val is null then 'Insufficient information to evaluate (0% or 100% conversion, or no participants).'
 				else 'No significant difference.'
 			end as details
 		)

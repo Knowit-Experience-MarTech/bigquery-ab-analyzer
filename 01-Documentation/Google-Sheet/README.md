@@ -8,7 +8,19 @@ If you haven't done so already, do the following Google Sheet setup:
 	1. Within that folder, create a **Images** folder.
 		1. Change **sharing** on the **Images** folder to **Anyone on the Internet with the link can view**.
 2. Copy the [**Google Sheet**](https://docs.google.com/spreadsheets/d/1s7gXuAao0mOoRl0gDmeqMincb4lolLhP1QM6iUU9lvU/edit?usp=sharing) into the **BigQuery A/B Analyzer** folder.
-	1. Go to the [**Settings** sheet](Settings-Sheet). Follow the setup there.
+	1. Go to the **Settings** sheet. Edit the following fields:
+		1. **Experiment Settings**
+			1. **Data Set Location**: As default it is set to **EU**. Change it to **US** if that is correct for you. The scheduled query also uses this setting.
+			2. **Project ID**: Insert your Google Cloud Project ID here.
+		2. **Download data to Sheet Settings**
+			1. **Analytics Tool**: Google Analytics, GA4Dataform, Amplitude, Mixpanel or PostHog.
+			2. **BigQuery Data Set ID**: BigQuery Data Set ID for your analytics tool. Ex. analytics_12345.
+			3. **BigQuery Table ID**: BigQuery Table ID for your analytics tool. For GA4, use **events_**, or **events_fresh_** if you have the GA4 360 Fresh Daily export. See [FAQ: Should I use events_ or events_fresh_?](../../README.md#137-should-i-use-events_-or-events_fresh_)
+		3. It's recommended to leave the other settings as is for simplicity.
+		4. See also [**Settings** detailed information](Settings-Sheet).
+	2. Go to the menu **BigQuery A/B Analyzer** -> **Get Data from BigQuery**
+		1. Refresh Events
+		2. Refresh Parameters
 3. Initialize **onEdit Trigger** the first time you uses the Google Sheet. Filtering and funnels requires a special **onEdit** trigger.
 	1. Click the menu 📈 **BigQuery A/B Analyzer** at the top.
 	2. Select **Settings > Initialize onEdit Trigger**.
@@ -130,17 +142,23 @@ Almost everything is powered by **[Apps Script](Apps-Script)**.
       <th scope="row" style="text-align: left;">Experiment Value</th>
       <td>Text</td>
       <td><code>value</code></td>
-      <td>The experiment’s value parameter (e.g., <code>value</code>). Must be filled out if <strong>Event Value Test</strong> = <strong>Yes</strong>.</td>
+      <td>The experiment’s value parameter (e.g., <code>value</code>). Must be filled out if <strong>Event Value Test</strong> = <strong>Yes</strong>.<br><br>The value is compared <strong>per participant</strong>. Participants without a conversion count as 0.<br><br><strong>Item metrics:</strong> Use an item field (e.g. <code>items.quantity</code> or <code>items.item_revenue</code>) to measure items sold or item revenue. Only items matching the item filters on the conversion event are counted. See <a href="../../README.md#item-metrics-items-sold-and-item-revenue">Item Metrics</a>.</td>
     </tr>
     <tr>
       <th scope="row" style="text-align: left;" rowspan="4">User Overlap</th>
       <td rowspan="4">Dropdown</td>
       <td>Credit Both</td>
-      <td rowspan="4">If a user could have seen both variants, choose how to handle this scenario. <strong>First Exposure</strong> credits the first variant seen. <strong>Last Exposure</strong> credits the last variant seen. <strong>Exclude</strong> removes such users from the analysis. <strong>Credit Both</strong> credits both variants.<br><br>For analysis of real A/B tests, use <strong>Exclude</strong> OR <strong>Credit Both</strong>.</td>
+      <td rowspan="4">If a user could have seen both variants, choose how to handle this scenario. <strong>First Exposure</strong> credits the first variant seen. <strong>Last Exposure</strong> credits the last variant seen. <strong>Exclude</strong> removes such users from the analysis. <strong>Credit Both</strong> credits both variants.<br><br>For analysis of real A/B tests, use <strong>Exclude</strong> OR <strong>Credit Both</strong>. <strong>Credit Both</strong> shows a warning in the results, since users in both groups make the groups dependent.</td>
     </tr>
     <tr><td>First Exposure</td></tr>
     <tr><td>Last Exposure</td></tr>
     <tr><td>Exclude</td></tr>
+    <tr>
+      <th scope="row" style="text-align: left;">Total Target Sample (Column X)</th>
+      <td>Number</td>
+      <td>20000</td>
+      <td>Total target sample size (A + B). Used by <strong>sequential monitoring</strong> and <strong>AI Summary</strong>. Use the <strong>Pre-Test Calculator</strong> to find the sample size, and add about 20%. The default value comes from the Settings sheet.</td>
+    </tr>
     <tr>
       <th scope="row" style="text-align: left;">Related Links</th>
       <td>Text</td>
@@ -337,5 +355,6 @@ Funnel settings are saved to a hidden **Funnel sheet**.
 ### Results Sheet
 
 * Results of the analyzed experiments can be downloaded to the **Results** sheet.
+* **Warnings** column: Explains when the test assumptions do not hold (Credit Both, date comparison or Sample Ratio Mismatch). Empty when there is nothing to warn about.
 
 

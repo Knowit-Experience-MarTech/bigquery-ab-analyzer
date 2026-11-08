@@ -110,6 +110,62 @@ If you want to learn more about creating custom URL links with Calculated Field,
 concat(id,". ",experiment_name)
 ```
 
+#### Conversion Likely Range \[Calc\]
+
+The likely range (confidence interval) of the conversion lift, e.g. **+4.4% to +9.8%**. Empty when the range can't be calculated.
+
+* **Field Name:** Conversion Likely Range \[Calc\]
+* **Field ID:** conv_likely_range_calc
+
+**Formula:**
+```javascript
+CASE
+  WHEN conv_lift_ci_low IS NULL THEN NULL
+  ELSE CONCAT(
+    CASE WHEN conv_lift_ci_low > 0 THEN "+" ELSE "" END,
+    CAST(ROUND(conv_lift_ci_low * 100, 1) AS TEXT), "% to ",
+    CASE WHEN conv_lift_ci_high > 0 THEN "+" ELSE "" END,
+    CAST(ROUND(conv_lift_ci_high * 100, 1) AS TEXT), "%"
+  )
+END
+```
+
+#### Value Likely Range \[Calc\]
+
+The likely range (confidence interval) of the value lift. Empty when no value test is run.
+
+* **Field Name:** Value Likely Range \[Calc\]
+* **Field ID:** value_likely_range_calc
+
+**Formula:**
+```javascript
+CASE
+  WHEN value_lift_ci_low IS NULL THEN NULL
+  ELSE CONCAT(
+    CASE WHEN value_lift_ci_low > 0 THEN "+" ELSE "" END,
+    CAST(ROUND(value_lift_ci_low * 100, 1) AS TEXT), "% to ",
+    CASE WHEN value_lift_ci_high > 0 THEN "+" ELSE "" END,
+    CAST(ROUND(value_lift_ci_high * 100, 1) AS TEXT), "%"
+  )
+END
+```
+
+#### Value per Conversion \[Calc\]
+
+Value per conversion (average order value). Value per participant includes participants without a conversion, and this field shows the value of the conversions only.
+
+* **Field Name:** Value per Conversion \[Calc\]
+* **Field ID:** value_per_conversion_calc
+
+**Formula:**
+```javascript
+CASE
+  WHEN variant = "A" AND conversion_a > 0 THEN total_conversion_value_a / conversion_a
+  WHEN variant = "B" AND conversion_b > 0 THEN total_conversion_value_b / conversion_b
+  ELSE NULL
+END
+```
+
 ## Data Source: experiments_images
 
 ### Calculated Fields

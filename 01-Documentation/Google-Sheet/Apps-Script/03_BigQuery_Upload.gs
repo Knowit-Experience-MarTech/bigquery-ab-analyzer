@@ -149,6 +149,12 @@ function confirmQueries() {
   const aiActivated = getSafeVal("SettingsAISummary", false);
   const aiPrompt = getSafeVal("SettingsAIPrompt", "");
 
+  const datasetLoc = getSafeVal("SettingsBigQueryDataSetLocation", "EU");
+  // INFORMATION_SCHEMA needs "region-<location>", e.g. region-eu, region-us or region-europe-west1.
+  let regionNorm = String(datasetLoc || 'EU').trim().toLowerCase() || 'eu';
+  if (!regionNorm.startsWith('region-')) regionNorm = 'region-' + regionNorm;
+  const safeRegion = regionNorm.replace(/[^a-z0-9-]/g, '');
+
   console.log("3. Formatting values...");
   
   // Bulletproof String conversion (prevents crashes if the cell is blank or a number)
@@ -172,7 +178,8 @@ function confirmQueries() {
         ${isLogging ? 'TRUE' : 'FALSE'} AS query_information_logging,
         ${Number(queryPrice) || 0} AS query_price_per_tib,
         ${isAiOn ? 'TRUE' : 'FALSE'} AS ai_summary_activated,
-        '${safeAiPrompt}' AS ai_prompt
+        '${safeAiPrompt}' AS ai_prompt,
+        '${safeRegion}' AS region
     ) AS source
     ON TRUE 
 
@@ -181,20 +188,23 @@ function confirmQueries() {
         query_information_logging = source.query_information_logging,
         query_price_per_tib = source.query_price_per_tib,
         ai_summary_activated = source.ai_summary_activated,
-        ai_prompt = source.ai_prompt
+        ai_prompt = source.ai_prompt,
+        region = source.region
 
     WHEN NOT MATCHED THEN
       INSERT (
         query_information_logging,
         query_price_per_tib,
         ai_summary_activated,
-        ai_prompt
+        ai_prompt,
+        region
       ) 
       VALUES (
         source.query_information_logging,
         source.query_price_per_tib,
         source.ai_summary_activated,
-        source.ai_prompt
+        source.ai_prompt,
+        source.region
       )
   `;
 
@@ -205,7 +215,7 @@ function confirmQueries() {
     runQuery(projectId, mergeQuery, 'MERGE settings');
     console.log("6. Query successful!");
     SpreadsheetApp.getActive().toast(
-      'AI Summary Settings uploaded to BigQuery.'
+      'Settings uploaded to BigQuery.'
     );
     return "Settings upsert complete.";
   } catch (e) {
@@ -248,7 +258,8 @@ function exportExperimentsToBigQuery() {
     "scope","identity_source","experiment_event_name","experiment_variant_parameter",
     "experiment_event_value_parameter","user_overlap",
     "export_mode", "analytics_tool", "ai_total_target_sample",
-    "analyze_funnel", "funnel_steps"
+    "analyze_funnel", "funnel_steps",
+    "source_project_id", "source_dataset_id", "source_table_id"
   ];
   const csv = rows.map(r => cols.map(c => toCsvCell(r[c])).join(",")).join("\n");
   const blob = Utilities.newBlob(csv, "application/octet-stream", "experiments_stage.csv");
@@ -287,7 +298,10 @@ function exportExperimentsToBigQuery() {
         { name: "analytics_tool", type: "STRING" },
         { name: "ai_total_target_sample", type: "INT64" },
         { name: "analyze_funnel", type: "BOOL" },
-        { name: "funnel_steps", type: "STRING" }
+        { name: "funnel_steps", type: "STRING" },
+        { name: "source_project_id", type: "STRING" },
+        { name: "source_dataset_id", type: "STRING" },
+        { name: "source_table_id",   type: "STRING" }
       ]}
     }}
   };
@@ -325,7 +339,10 @@ function exportExperimentsToBigQuery() {
     analytics_tool = S.analytics_tool,
     ai_total_target_sample = S.ai_total_target_sample,
     analyze_funnel = S.analyze_funnel,
-    funnel_steps = S.funnel_steps
+    funnel_steps = S.funnel_steps,
+    source_project_id = S.source_project_id,
+    source_dataset_id = S.source_dataset_id,
+    source_table_id = S.source_table_id
   WHEN MATCHED AND UPPER(TRIM(S.export_mode)) = 'UPDATE' THEN UPDATE SET
     experiment_name = S.experiment_name,
     variant_name = S.variant_name,
@@ -338,12 +355,14 @@ function exportExperimentsToBigQuery() {
     id,variant,date_start,date_end,date_comparison,experiment_name,variant_name,
     conversion_event,conversion_count_all, exp_variant_string,analyze_test,event_value_test,hypothesis,confidence,
     description,scope,identity_source,experiment_event_name,experiment_variant_parameter,
-    experiment_event_value_parameter,user_overlap, analytics_tool, ai_total_target_sample, analyze_funnel, funnel_steps
+    experiment_event_value_parameter,user_overlap, analytics_tool, ai_total_target_sample, analyze_funnel, funnel_steps,
+    source_project_id, source_dataset_id, source_table_id
   ) VALUES (
     S.id,S.variant,S.date_start,S.date_end,S.date_comparison,S.experiment_name,S.variant_name,
     S.conversion_event, S.conversion_count_all, S.exp_variant_string,S.analyze_test,S.event_value_test,S.hypothesis,S.confidence,
     S.description,S.scope,S.identity_source,S.experiment_event_name,S.experiment_variant_parameter,
-    S.experiment_event_value_parameter,S.user_overlap, S.analytics_tool, S.ai_total_target_sample, S.analyze_funnel, S.funnel_steps
+    S.experiment_event_value_parameter,S.user_overlap, S.analytics_tool, S.ai_total_target_sample, S.analyze_funnel, S.funnel_steps,
+    S.source_project_id, S.source_dataset_id, S.source_table_id
   )`;
 
   // Kick the related exports
@@ -417,6 +436,9 @@ function flatten2RowBlocks(sheet) {
   const columnIdentificatorTitle = ss.getRangeByName("ColumnIdentificatorTitle").getValue();
   const columnExperimentEventNameTitle = ss.getRangeByName("ColumnExperimentEventNameTitle").getValue();
   const columnExperimentVariantParameterTitle = ss.getRangeByName("ColumnExperimentVariantParameterTitle").getValue();
+  const sourceProjectId = String(ss.getRangeByName("SettingsBigQueryProjectID").getValue()).trim();
+  const sourceDatasetId = String(ss.getRangeByName("SettingsBigQueryDataSetID").getValue()).trim();
+  const sourceTableId   = String(ss.getRangeByName("SettingsBigQueryTableID").getValue()).trim();
 
   function colLetter(n) {
     let s = '';
@@ -431,8 +453,24 @@ function flatten2RowBlocks(sheet) {
   function pushStatusOnly(topRow, idVal) {
     const idStr = normalizeExperimentId(idVal);
     if (!idStr) return false;
-    results.valid.push({ id: idStr, variant: "A", analyze_test: false, export_mode: "STATUS_ONLY" });
-    results.valid.push({ id: idStr, variant: "B", analyze_test: false, export_mode: "STATUS_ONLY" });
+    results.valid.push({ 
+      id: idStr, 
+      variant: "A", 
+      analyze_test: false, 
+      export_mode: "STATUS_ONLY",
+      source_project_id: sourceProjectId,
+      source_dataset_id: sourceDatasetId,
+      source_table_id: sourceTableId
+    });
+    results.valid.push({ 
+      id: idStr, 
+      variant: "B", 
+      analyze_test: false, 
+      export_mode: "STATUS_ONLY",
+      source_project_id: sourceProjectId,
+      source_dataset_id: sourceDatasetId,
+      source_table_id: sourceTableId
+    });
     return true;
   }
 
@@ -610,7 +648,10 @@ function flatten2RowBlocks(sheet) {
       analytics_tool: valAnalyticsTool,
       ai_total_target_sample: ai_total_target_sample,
       analyze_funnel: valFunnelsColumn,
-      funnel_steps: funnelStepsJson_A
+      funnel_steps: funnelStepsJson_A,
+      source_project_id: sourceProjectId,
+      source_dataset_id: sourceDatasetId,
+      source_table_id: sourceTableId
     };
     results.valid.push(rec1);
 
@@ -640,7 +681,10 @@ function flatten2RowBlocks(sheet) {
       analytics_tool: valAnalyticsTool,
       ai_total_target_sample: ai_total_target_sample,
       analyze_funnel: valFunnelsColumn,
-      funnel_steps: funnelStepsJson_B
+      funnel_steps: funnelStepsJson_B,
+      source_project_id: sourceProjectId,
+      source_dataset_id: sourceDatasetId,
+      source_table_id: sourceTableId
     };
     results.valid.push(rec2);
   }

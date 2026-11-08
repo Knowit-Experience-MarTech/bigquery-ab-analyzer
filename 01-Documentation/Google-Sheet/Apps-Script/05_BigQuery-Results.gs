@@ -27,42 +27,49 @@ function downloadReportingData() {
   const datasetId = ss.getRangeByName("SettingsBigQueryExperimentsDataSetID").getValue();
   const tableId   = ss.getRangeByName("SettingsBigQueryReportingTable").getValue();
   
-  // Build the SQL query (using Standard SQL).
+  // Columns 1-30 keep their original order. Columns 31+ hold the statistics added in v2.4.
   const query = 
-    "SELECT id, experiment_name, date_last_analyzed, date_start, date_end, hypothesis, confidence_level, analyze_test, user_overlap, conversion_event, conv_significance, conv_details, value_significance, value_details, scope, identity_source, test_a, conversion_a, test_b, conversion_b, conv_rate_a, conv_rate_b, conv_z_score, conv_p_value, mean_value_a, mean_value_b, t_value, value_p_value, total_conversion_value_a, total_conversion_value_b " +
+    "SELECT id, experiment_name, date_last_analyzed, date_start, date_end, hypothesis, confidence_level, analyze_test, user_overlap, conversion_event, conv_significance, conv_details, value_significance, value_details, scope, identity_source, test_a, conversion_a, test_b, conversion_b, conv_rate_a, conv_rate_b, conv_z_score, conv_p_value, mean_value_a, mean_value_b, t_value, value_p_value, total_conversion_value_a, total_conversion_value_b, " +
+    RESULTS_EXTRA_COLUMNS.map(c => c.field).join(", ") + " " +
     "FROM `" + projectId + "." + datasetId + "." + tableId + "` " +
-    "ORDER BY analyze_test desc, date_last_analyzed DESC, CAST(id AS INT64) DESC, date_end DESC";
-  
-  const request = {
-    query: query,
-    useLegacySql: false
-  };
+    "ORDER BY analyze_test desc, date_last_analyzed DESC, SAFE_CAST(id AS INT64) DESC, date_end DESC";
   
   try {
-    // Execute the query.
-    const queryResults = BigQuery.Jobs.query(request, projectId);
-    if (!queryResults.rows) {
+    const data = runReportQuery_(projectId, query);
+    if (!data.length) {
       Logger.log("No rows returned.");
+      ss.toast("No results found in BigQuery.", "Download Complete", 5);
       return;
     }
     
-    // Process returned rows into a 2D array.
-    const data = queryResults.rows.map(function(row) {
-      return row.f.map(function(field) {
-        return field.v;
-      });
-    });
-    
     // Get the "Results" sheet.
-    const resultsSheet = ss.getSheetByName("Results");
+    let resultsSheet = ss.getSheetByName("Results");
     if (!resultsSheet) {
       resultsSheet = ss.insertSheet("Results");
     }
+
+    // Make room for the extra columns and give them headers.
+    const neededCols = data[0].length;
+    if (resultsSheet.getMaxColumns() < neededCols) {
+      resultsSheet.insertColumnsAfter(resultsSheet.getMaxColumns(), neededCols - resultsSheet.getMaxColumns());
+    }
+    resultsSheet.getRange(firstRow - 1, RESULTS_EXTRA_FIRST_COLUMN, 1, RESULTS_EXTRA_COLUMNS.length)
+      .setValues([RESULTS_EXTRA_COLUMNS.map(c => c.header)])
+      .setFontWeight("bold").setWrap(true).setVerticalAlignment("top");
+
+    // Remove headers left by the earlier draft (only cells that still hold those exact titles).
+    const headerRow = resultsSheet.getRange(firstRow - 1, 1, 1, resultsSheet.getMaxColumns());
+    const headers = headerRow.getValues()[0];
+    headers.forEach((h, i) => {
+      if (i + 1 > neededCols && RESULTS_OBSOLETE_HEADERS.indexOf(String(h)) !== -1) {
+        resultsSheet.getRange(firstRow - 1, i + 1).clearContent();
+      }
+    });
     
     // Clear only rows firstRow and below.
     const totalRows = resultsSheet.getMaxRows();
-    if (totalRows > 5) {
-      resultsSheet.getRange(firstRow, 1, totalRows - 5, resultsSheet.getMaxColumns()).clear();
+    if (totalRows >= firstRow) {
+      resultsSheet.getRange(firstRow, 1, totalRows - firstRow + 1, resultsSheet.getMaxColumns()).clear();
     }
     
     // Write the data starting at row firstRow.
@@ -70,64 +77,105 @@ function downloadReportingData() {
     resultsSheet.getRange(firstRow, 21, data.length, 2).setNumberFormat("0.00%");
     resultsSheet.getRange(firstRow, 23, data.length, 6).setNumberFormat("0.0000");
     resultsSheet.getRange(firstRow, 29, data.length, 2).setNumberFormat("#,##0.00");
-    resultsSheet.getRange(firstRow, 1, firstRow-1, resultsSheet.getMaxColumns()).setWrap(true).setVerticalAlignment("top");
+    RESULTS_EXTRA_COLUMNS.forEach((c, i) => {
+      if (c.format) resultsSheet.getRange(firstRow, RESULTS_EXTRA_FIRST_COLUMN + i, data.length, 1).setNumberFormat(c.format);
+    });
+    resultsSheet.getRange(firstRow, 1, data.length, data[0].length).setWrap(true).setVerticalAlignment("top");
     
     // Apply formatting.
-    formatResultsData(resultsSheet, firstRow);
+    formatResultsData(resultsSheet, firstRow, data);
 
     const msg = `All data has been downloaded.\nTotal Results: ${data.length}`;
     ss.toast(msg, "Download Complete", 5);
     
     Logger.log("Data downloaded and formatted successfully.");
     return data;
-    ss.toast("Deletion complete.");
   } catch (err) {
     Logger.log("Error downloading data from BigQuery: " + err);
-    SpreadsheetApp.getUi().alert("Failed to download data from BigQuery. Check logs for details.");
+    SpreadsheetApp.getUi().alert("Failed to download data from BigQuery.\n\n" + err);
   }
+}
+
+/** Extra report column (v2.4): warnings when the test assumptions do not hold (Credit Both,
+ *  date comparison, Sample Ratio Mismatch). Lift ranges and value per conversion are part of the
+ *  Conv. Details and Value Details text, so they need no columns of their own. */
+const RESULTS_EXTRA_FIRST_COLUMN = 31;
+const RESULTS_EXTRA_COLUMNS = [
+  { field: "method_warning", header: "Warnings", format: null }
+];
+/** Headers written by an earlier v2.4 draft of this script; removed if found. */
+const RESULTS_OBSOLETE_HEADERS = [
+  "Sample Ratio Mismatch", "SRM P-Value", "Conversion Lift CI Low", "Conversion Lift CI High",
+  "Value Lift CI Low", "Value Lift CI High", "Share of Target Sample", "P-Value Threshold Today", "Target Sample"
+];
+
+/**
+ * Runs a query and returns all rows as a 2D array.
+ * Waits for the job to finish and reads every result page.
+ */
+function runReportQuery_(projectId, query) {
+  let res = BigQuery.Jobs.query({ query: query, useLegacySql: false }, projectId);
+  const jobId = res.jobReference.jobId;
+  const location = res.jobReference.location;
+  let sleepMs = 500;
+  while (!res.jobComplete) {
+    Utilities.sleep(sleepMs);
+    sleepMs = Math.min(sleepMs * 2, 5000);
+    res = BigQuery.Jobs.getQueryResults(projectId, jobId, { location: location });
+  }
+  const rows = [];
+  while (true) {
+    (res.rows || []).forEach(row => rows.push(row.f.map(field => field.v)));
+    if (!res.pageToken) break;
+    res = BigQuery.Jobs.getQueryResults(projectId, jobId, { location: location, pageToken: res.pageToken });
+  }
+  return rows;
 }
 
 /**
  * Formats the data in the Results sheet starting at startRow.
  * Even rows get a very light gray background.
- * In columns I (9) and J (10), if the text is "SIGNIFICANT", make it bold and green;
- * if "NOT SIGNIFICANT", make it normal and red.
+ * Significance columns K (11) and M (13): SIGNIFICANT is bold green, NOT_SIGNIFICANT is red,
+ * NOT_EVALUATED is gray. Rows with a warning get the warning cell highlighted.
+ * All formatting is written in a few batch calls, which is much faster than cell by cell.
  */
-function formatResultsData(sheet, startRow) {
+function formatResultsData(sheet, startRow, data) {
   const lastRow = sheet.getLastRow();
+  if (lastRow < startRow) return;
+  const numRows = lastRow - startRow + 1;
   const totalCols = sheet.getMaxColumns();
-  
-  for (let r = startRow; r <= lastRow; r++) {
-    // Set even rows to light gray, odd rows to white.
-    if (r % 2 === 0) {
-      sheet.getRange(r, 1, 1, totalCols).setBackground("#f1f1f1");
-    } else {
-      sheet.getRange(r, 1, 1, totalCols).setBackground("#ffffff");
-    }
-    
-    // Format columns K (11) and M (13)
-    const convSignificanceCell = sheet.getRange(r, 11);
-    const valueSignificanceCell = sheet.getRange(r, 13);
-    
-    const convSignificanceText = String(convSignificanceCell.getValue()).toUpperCase();
-    const valueSignificanceText = String(valueSignificanceCell.getValue()).toUpperCase();
-    
-    if (convSignificanceText === "SIGNIFICANT") {
-      convSignificanceCell.setFontWeight("bold").setFontColor("green");
-    } else if (convSignificanceText === "NOT_SIGNIFICANT") {
-      convSignificanceCell.setFontWeight("normal").setFontColor("red");
-    } else {
-      convSignificanceCell.setFontWeight("normal").setFontColor("black");
-    }
-    
-    if (valueSignificanceText === "SIGNIFICANT") {
-      valueSignificanceCell.setFontWeight("bold").setFontColor("green");
-    } else if (valueSignificanceText === "NOT_SIGNIFICANT") {
-      valueSignificanceCell.setFontWeight("normal").setFontColor("red");
-    } else {
-      valueSignificanceCell.setFontWeight("normal").setFontColor("black");
-    }
+  const values = data || sheet.getRange(startRow, 1, numRows, totalCols).getValues();
+
+  const backgrounds = [];
+  for (let i = 0; i < numRows; i++) {
+    const color = (startRow + i) % 2 === 0 ? "#f1f1f1" : "#ffffff";
+    backgrounds.push(new Array(totalCols).fill(color));
   }
+
+  function styleFor(text) {
+    const t = String(text || "").toUpperCase();
+    if (t === "SIGNIFICANT") return ["green", "bold"];
+    if (t === "NOT_SIGNIFICANT") return ["red", "normal"];
+    if (t === "NOT_EVALUATED") return ["#999999", "normal"];
+    return ["black", "normal"];
+  }
+
+  const sigCols = [11, 13];
+  sigCols.forEach(col => {
+    const colors = [], weights = [];
+    for (let i = 0; i < numRows; i++) {
+      const s = styleFor(values[i] ? values[i][col - 1] : "");
+      colors.push([s[0]]); weights.push([s[1]]);
+    }
+    sheet.getRange(startRow, col, numRows, 1).setFontColors(colors).setFontWeights(weights);
+  });
+
+  const warnCol = RESULTS_EXTRA_FIRST_COLUMN;      // Warnings
+  for (let i = 0; i < numRows; i++) {
+    const row = values[i] || [];
+    if (row[warnCol - 1] && warnCol <= totalCols) backgrounds[i][warnCol - 1] = "#fff2cc";
+  }
+  sheet.getRange(startRow, 1, numRows, totalCols).setBackgrounds(backgrounds);
 }
 
 /*********************************************************
@@ -1087,4 +1135,4 @@ function calculatorDeleteAllFilters() {
       sheet.deleteRows(startRow + 1, count - 1);
     }
   }
-}
+}
