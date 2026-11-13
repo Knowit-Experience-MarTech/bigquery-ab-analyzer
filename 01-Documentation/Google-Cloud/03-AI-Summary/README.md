@@ -73,3 +73,11 @@ Sometimes Gemini rejects the request with *"Exceeded rate limits: too many concu
 
 * The cost of using Gemini for these types of analysis is minimal.
 	* Gemini pricing [is listed here](https://cloud.google.com/vertex-ai/generative-ai/pricing).
+
+<!-- footer:start -->
+
+---
+
+Solution by [**Eivind Savio**](https://www.savio.no/?utm_source=github.com&utm_medium=referral&utm_campaign=knowit-ai-analytics&utm_content=bigquery-ab-analyzer) from [**Knowit AI & Analytics**](https://www.knowit.no/?utm_source=github.com&utm_medium=referral&utm_campaign=knowit-ai-analytics&utm_content=bigquery-ab-analyzer) (Oslo, Norway). Not officially supported by Knowit.
+
+<!-- footer:end -->

@@ -196,3 +196,11 @@ How to upgrade is described below.
 
 * It's optional to set up this functionality.
 * Follow the [**AI Summary documentation**](../../01-Documentation/Google-Cloud/03-AI-Summary/).
+
+<!-- footer:start -->
+
+---
+
+Solution by [**Eivind Savio**](https://www.savio.no/?utm_source=github.com&utm_medium=referral&utm_campaign=knowit-ai-analytics&utm_content=bigquery-ab-analyzer) from [**Knowit AI & Analytics**](https://www.knowit.no/?utm_source=github.com&utm_medium=referral&utm_campaign=knowit-ai-analytics&utm_content=bigquery-ab-analyzer) (Oslo, Norway). Not officially supported by Knowit.
+
+<!-- footer:end -->

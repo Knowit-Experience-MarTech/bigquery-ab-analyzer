@@ -21,3 +21,11 @@ Replace the following Apps Script:
 #### 1.2 Settings Sheet
 
 * When you have made all the updates, change **Version** in the **About** section to **v2.21**.
+
+<!-- footer:start -->
+
+---
+
+Solution by [**Eivind Savio**](https://www.savio.no/?utm_source=github.com&utm_medium=referral&utm_campaign=knowit-ai-analytics&utm_content=bigquery-ab-analyzer) from [**Knowit AI & Analytics**](https://www.knowit.no/?utm_source=github.com&utm_medium=referral&utm_campaign=knowit-ai-analytics&utm_content=bigquery-ab-analyzer) (Oslo, Norway). Not officially supported by Knowit.
+
+<!-- footer:end -->

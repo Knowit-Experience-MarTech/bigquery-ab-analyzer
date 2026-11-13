@@ -252,3 +252,11 @@ If your report shows **Mean Value**, rename the label to **Value per Participant
 ### 5.5 New fields
 
 Reconnect (refresh fields in) the **experiments_report** data source to get the new fields: `srm_p_value`, `srm_status`, `target_sample`, `information_fraction`, `sequential_alpha`, `conv_lift_ci_low`, `conv_lift_ci_high`, `value_lift_ci_low`, `value_lift_ci_high` and `method_warning`.
+
+<!-- footer:start -->
+
+---
+
+Solution by [**Eivind Savio**](https://www.savio.no/?utm_source=github.com&utm_medium=referral&utm_campaign=knowit-ai-analytics&utm_content=bigquery-ab-analyzer) from [**Knowit AI & Analytics**](https://www.knowit.no/?utm_source=github.com&utm_medium=referral&utm_campaign=knowit-ai-analytics&utm_content=bigquery-ab-analyzer) (Oslo, Norway). Not officially supported by Knowit.
+
+<!-- footer:end -->

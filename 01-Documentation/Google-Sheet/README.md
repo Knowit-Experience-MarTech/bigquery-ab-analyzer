@@ -357,4 +357,10 @@ Funnel settings are saved to a hidden **Funnel sheet**.
 * Results of the analyzed experiments can be downloaded to the **Results** sheet.
 * **Warnings** column: Explains when the test assumptions do not hold (Credit Both, date comparison or Sample Ratio Mismatch). Empty when there is nothing to warn about.
 
+<!-- footer:start -->
 
+---
+
+Solution by [**Eivind Savio**](https://www.savio.no/?utm_source=github.com&utm_medium=referral&utm_campaign=knowit-ai-analytics&utm_content=bigquery-ab-analyzer) from [**Knowit AI & Analytics**](https://www.knowit.no/?utm_source=github.com&utm_medium=referral&utm_campaign=knowit-ai-analytics&utm_content=bigquery-ab-analyzer) (Oslo, Norway). Not officially supported by Knowit.
+
+<!-- footer:end -->

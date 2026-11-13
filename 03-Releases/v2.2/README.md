@@ -171,3 +171,11 @@ SpreadsheetApp.getUi().alert(`Migration Complete!\n\n- Migrated ${migratedCount}
 If everything went smooth, upgrade is now completed.
 
 Don't forget to change **Version** in the **About** section to **v2.1** in **Settings sheet**.
+
+<!-- footer:start -->
+
+---
+
+Solution by [**Eivind Savio**](https://www.savio.no/?utm_source=github.com&utm_medium=referral&utm_campaign=knowit-ai-analytics&utm_content=bigquery-ab-analyzer) from [**Knowit AI & Analytics**](https://www.knowit.no/?utm_source=github.com&utm_medium=referral&utm_campaign=knowit-ai-analytics&utm_content=bigquery-ab-analyzer) (Oslo, Norway). Not officially supported by Knowit.
+
+<!-- footer:end -->
