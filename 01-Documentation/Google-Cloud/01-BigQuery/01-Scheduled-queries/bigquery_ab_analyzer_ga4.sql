@@ -265,8 +265,8 @@ begin
         where id = rec.id and analyze_test = true
       ), '.*');
 
-      if regexp_contains(rec.experiment_event_name, r'^firebase_exp_\d+$') then
-        set variant_key = rec.experiment_event_name;
+      if regexp_contains(trim(rec.experiment_event_name), r'^firebase_exp_') then
+        set variant_key = trim(rec.experiment_event_name);
         set exposure_guard = concat(
           " and exists (select 1 from unnest(user_properties) up ",
           "where up.key = '", replace(variant_key, "'", "\\'"), "')"
@@ -722,7 +722,12 @@ begin
         ),
         extracted as (
           select a.*,
-            (select p.value.string_value from unnest(a.event_params) p where p.key = '%s' limit 1) as variant_value
+            -- Variant from an event parameter, or from a user property (e.g. Firebase A/B Testing: firebase_exp_N).
+            -- Numbers are read as text, so variant 1 matches "^1$".
+            coalesce(
+              (select coalesce(p.value.string_value, cast(p.value.int_value as string), cast(p.value.float_value as string), cast(p.value.double_value as string)) from unnest(a.event_params) p where p.key = '%s' limit 1),
+              (select coalesce(up.value.string_value, cast(up.value.int_value as string), cast(up.value.float_value as string), cast(up.value.double_value as string)) from unnest(a.user_properties) up where up.key = '%s' limit 1)
+            ) as variant_value
           from all_events a
         ),
         exposures_all as (
@@ -747,7 +752,8 @@ begin
         rec.source_dataset_id,
         concat(rtrim(trim(rec.source_table_id), '*'), '*'),
         id_predicate,                                                                                
-        replace(coalesce(variant_key, ''), "'", "\\'"),                                                                                                                                
+        replace(coalesce(variant_key, ''), "'", "\\'"),  -- event parameter key
+        replace(coalesce(variant_key, ''), "'", "\\'"),  -- user property key
         coalesce(rec.scope, 'User'), id_expr,                                                        
         format_date('%Y%m%d', rec.date_start), format_date('%Y%m%d', rec.date_end),
         exposure_guard, exp_filter
@@ -845,7 +851,11 @@ begin
             from all_events
             where table_suffix between '%s' and '%s'
               %s
-              and regexp_contains(coalesce((select p.value.string_value from unnest(event_params) p where p.key = '%s' limit 1), ''), r'''%s''')
+              and regexp_contains(coalesce(
+                (select coalesce(p.value.string_value, cast(p.value.int_value as string), cast(p.value.float_value as string), cast(p.value.double_value as string)) from unnest(event_params) p where p.key = '%s' limit 1),
+                (select coalesce(up.value.string_value, cast(up.value.int_value as string), cast(up.value.float_value as string), cast(up.value.double_value as string)) from unnest(user_properties) up where up.key = '%s' limit 1),
+                ''
+              ), r'''%s''')
               %s
             group by grouping_key
           )
@@ -859,7 +869,8 @@ begin
           format_date('%Y%m%d', rec.date_start), 
           format_date('%Y%m%d', rec.date_end), 
           exposure_guard, 
-          replace(coalesce(variant_key, ''), "'", "\\'"), 
+          replace(coalesce(variant_key, ''), "'", "\\'"),  -- event parameter key
+          replace(coalesce(variant_key, ''), "'", "\\'"),  -- user property key
           replace(replace(coalesce(rec.exp_variant_string, ''), '%', '%%'), "'''", "\\'\\'\\'"), 
           exp_filter
         );

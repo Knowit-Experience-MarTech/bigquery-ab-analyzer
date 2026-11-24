@@ -266,17 +266,53 @@ begin
       ), '.*');
 
       -- Exposure Logic
-      set variant_key = rec.experiment_variant_parameter;
-    
-      if strpos(variant_key, '.') = 0 then
-        set variant_col_path = format("event_params.%s", variant_key);
+      -- Firebase A/B Testing stores the variant as a user property (firebase_exp_N, values 0, 1, 2 ...).
+      -- In GA4Dataform it is a column in user_properties, so firebase_exp_N must be added
+      -- as a custom user property in the GA4Dataform configuration.
+      if regexp_contains(trim(rec.experiment_event_name), r'^firebase_exp_') then
+        -- Experiment Event = firebase_exp_N: the first event with the user property is the exposure.
+        set variant_key = trim(rec.experiment_event_name);
+        set variant_col_path = format("user_properties.%s", variant_key);
+        set exposure_guard = format(" and %s is not null", variant_col_path);
       else
-        set variant_col_path = variant_key;
+        set variant_key = trim(rec.experiment_variant_parameter);
+
+        if strpos(variant_key, '.') > 0 then
+          set variant_col_path = variant_key;  -- full path, e.g. user_properties.firebase_exp_12
+        elseif regexp_contains(variant_key, r'^firebase_exp_') then
+          set variant_col_path = format("user_properties.%s", variant_key);
+        else
+          set variant_col_path = format("event_params.%s", variant_key);
+        end if;
+
+        set exposure_guard = concat(
+          " and event_name = '", replace(rec.experiment_event_name, "'", "\\'"), "'"
+        );
       end if;
 
-      set exposure_guard = concat(
-        " and event_name = '", replace(rec.experiment_event_name, "'", "\\'"), "'"
-      );
+      -- A user property column only exists if it is added to the GA4Dataform configuration.
+      if starts_with(lower(variant_col_path), 'user_properties.') then
+        begin
+          declare field_found int64 default 0;
+          execute immediate format("""
+            select count(*)
+            from `%s.%s.INFORMATION_SCHEMA.COLUMN_FIELD_PATHS`
+            where table_name = @table_name and lower(field_path) = lower(@field_path)
+          """, rec.source_project_id, rec.source_dataset_id)
+          into field_found
+          using coalesce(nullif(trim(rec.source_table_id), ''), events_table_name) as table_name,
+                variant_col_path as field_path;
+
+          if field_found = 0 then
+            raise using message = concat(
+              'Experiment ', rec.id, ': ', variant_col_path, ' was not found in ',
+              coalesce(nullif(trim(rec.source_table_id), ''), events_table_name), '. ',
+              'Add ', regexp_replace(variant_col_path, r'(?i)^user_properties[.]', ''),
+              ' as a custom user property in the GA4Dataform configuration, and run GA4Dataform again.'
+            );
+          end if;
+        end;
+      end if;
 
       ----------------------------------------------------------------------------
       -- (3b) Gather filters for this (id, variant)

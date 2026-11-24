@@ -46,6 +46,8 @@ Wait for the "toast" notification at the bottom right confirming success.
 ### Step B: Configure the Test
 Fill out a row in the Experiments tab (see [**Experiments sheet**](Google-Sheet/README.md#experiments-sheet) and configure [**Filters**](Google-Sheet/README.md#filtering) for details).
 
+Analyzing a Firebase A/B Testing experiment? See [**Firebase A/B Testing**](Firebase) for how to set it up.
+
 Set **Total target sample** for the experiment. Use the **Pre-Test Calculator** to find the sample size, and add about 20%. The target sample is used by **sequential monitoring**, which makes it safe to check the results every day.
 
 ### Step C: Run Analysis

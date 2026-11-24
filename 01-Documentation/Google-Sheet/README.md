@@ -211,7 +211,7 @@ Almost everything is powered by **[Apps Script](Apps-Script)**.
       <th scope="row" style="text-align: left;">Experiment Event Name</th>
       <td>Text</td>
       <td><code>experience_impression</code></td>
-      <td>Name of the experiment event (e.g., <code>experience_impression</code>). For a Firebase experiment, use <code>firebase_exp_01</code>, where <code>01</code> is the experiment ID.</td>
+      <td>Name of the experiment event (e.g., <code>experience_impression</code>). For a Firebase experiment, use <code>firebase_exp_01</code>, where <code>01</code> is the experiment ID. Firebase numbers the variants 0 (baseline), 1, 2 …, so use <code>^0$</code>, <code>^1$</code> etc. as <strong>Experiment Variant String</strong>.<br><br><strong>GA4Dataform:</strong> Add <code>firebase_exp_01</code> as a custom user property in the GA4Dataform configuration first.<br><br>See <a href="../Firebase">Firebase A/B Testing</a>.</td>
     </tr>
   </tbody>
 </table>

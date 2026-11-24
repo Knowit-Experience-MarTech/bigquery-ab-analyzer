@@ -412,6 +412,12 @@ function runPreTestCalculator() {
   const targetParam = sheet.getRange("C10").getValue();       
   const targetParamValue = sheet.getRange("C11").getValue();  
   const conversionEvent = sheet.getRange("C12").getValue();  
+
+  // --- FIREBASE A/B TESTING ---
+  // Firebase stores the experiment as a user property (firebase_exp_N), not as an event.
+  // Every event from a user in the experiment carries the property, so the first such event is the exposure.
+  const firebaseKey = String(targetEvent || "").trim();
+  const isFirebaseExperiment = /^firebase_exp_/.test(firebaseKey);
   
   // --- VALIDATE REGEX ---
   if (targetParamValue && !ISVALIDREGEX(targetParamValue)) {
@@ -438,6 +444,8 @@ function runPreTestCalculator() {
             paramType = lookupData[i][0]; 
             if (paramType === "Event") {
               sqlParamString = `event_params.${targetParam}`; 
+            } else if (paramType === "User") {
+              sqlParamString = `user_properties.${targetParam}`; 
             } else if (paramType === "Column") {
               sqlParamString = targetParam; 
             }
@@ -445,6 +453,12 @@ function runPreTestCalculator() {
           }
         }
       }
+    }
+
+    // A Firebase experiment used as parameter is a user property, also when it is not in the lookup list.
+    if (/^firebase_exp_/.test(String(targetParam).trim()) && paramType === "Column") {
+      paramType = "User";
+      sqlParamString = `user_properties.${String(targetParam).trim()}`;
     }
   }
 
@@ -551,7 +565,9 @@ function runPreTestCalculator() {
         SELECT user_pseudo_id, MIN(time.event_timestamp) as first_exposure_time
         FROM ${tablePath}
         WHERE event_date >= DATE_SUB(CURRENT_DATE(), INTERVAL ${days} DAY)
-          AND event_name = '${targetEvent}'
+          AND ${isFirebaseExperiment
+                ? `user_properties.${firebaseKey} IS NOT NULL` // must be a custom user property in GA4Dataform
+                : `event_name = '${targetEvent}'`}
           ${dataformParamCondition}
           ${experimentFiltersSQL}
         GROUP BY user_pseudo_id
@@ -590,6 +606,14 @@ function runPreTestCalculator() {
             SELECT 1 FROM UNNEST(event_params) ep 
             WHERE ep.key = '${targetParam}' 
             AND REGEXP_CONTAINS(COALESCE(ep.value.string_value, CAST(ep.value.int_value AS STRING), CAST(ep.value.float_value AS STRING), CAST(ep.value.double_value AS STRING), ''), r'${targetParamValue}')
+          )
+        `;
+      } else if (paramType === "User") {
+        nativeGa4ParamCondition = `
+          AND EXISTS (
+            SELECT 1 FROM UNNEST(user_properties) up 
+            WHERE up.key = '${String(targetParam).trim()}' 
+            AND REGEXP_CONTAINS(COALESCE(up.value.string_value, CAST(up.value.int_value AS STRING), CAST(up.value.float_value AS STRING), CAST(up.value.double_value AS STRING), ''), r'${targetParamValue}')
           )
         `;
       } else if (paramType === "Column") {
@@ -648,7 +672,9 @@ function runPreTestCalculator() {
         SELECT user_pseudo_id, MIN(event_timestamp) as first_exposure_time
         FROM ${nativeTablePath}
         WHERE _TABLE_SUFFIX BETWEEN FORMAT_DATE('%Y%m%d', DATE_SUB(CURRENT_DATE(), INTERVAL ${days} DAY)) AND FORMAT_DATE('%Y%m%d', CURRENT_DATE())
-          AND event_name = '${targetEvent}'
+          AND ${isFirebaseExperiment
+                ? `EXISTS (SELECT 1 FROM UNNEST(user_properties) up WHERE up.key = '${firebaseKey}')`
+                : `event_name = '${targetEvent}'`}
           ${nativeGa4ParamCondition}
           ${experimentFiltersSQL}
         GROUP BY user_pseudo_id
@@ -993,12 +1019,14 @@ function executeBigQuery(projectId, query) {
   try {
     let queryResults = BigQuery.Jobs.query(request, projectId); 
     const jobId = queryResults.jobReference.jobId;
+    // The location is needed to read results from jobs outside the US/EU multi-regions (e.g. europe-north1).
+    const location = queryResults.jobReference.location;
     
     let sleepTimeMs = 500;
-    // Now it can safely update the variable while it waits!
     while (!queryResults.jobComplete) {
       Utilities.sleep(sleepTimeMs);
-      queryResults = BigQuery.Jobs.getQueryResults(projectId, jobId); 
+      sleepTimeMs = Math.min(sleepTimeMs * 2, 5000);
+      queryResults = BigQuery.Jobs.getQueryResults(projectId, jobId, { location: location }); 
     }
     
     const rows = queryResults.rows;
@@ -1135,4 +1163,4 @@ function calculatorDeleteAllFilters() {
       sheet.deleteRows(startRow + 1, count - 1);
     }
   }
-}
+}

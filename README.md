@@ -9,7 +9,7 @@ The **BigQuery A/B Analyzer** decouples experiment definition from execution. It
 The framework supports the following tools:
 * [Google Analytics](https://marketingplatform.google.com/about/analytics/) (GA4)
 	* [Firebase](https://firebase.google.com/docs/ab-testing/bigquery)
- 		* Supports Firebase experiment structure in BigQuery.
+ 		* Supports Firebase experiment structure in BigQuery. See [Firebase A/B Testing](01-Documentation/Firebase).
 * [GA4Dataform](https://ga4dataform.com/) by Superform Labs
 	* Flattened GA4 tables that are faster and more affordable to query.
 * [Amplitude](https://www.amplitude.com/)
@@ -28,10 +28,12 @@ The solution is built around **Google Sheet**, **BigQuery**, **Gemini AI** and *
 	2. [Settings sheet](01-Documentation/Google-Sheet/Settings-Sheet)
 2. [Documentation / using the Google Sheet solution](01-Documentation)
 3. [Data Studio / presenting results](01-Documentation/Data-Studio)
+4. [Firebase A/B Testing](01-Documentation/Firebase) (Optional)
 
 ## 3. Upgrading
-* [v2.4 is latest version](../../releases/tag/v2.4).
-* [How to upgrade to v2.4](03-Releases/v2.4).
+* [v2.41 is latest version](../../releases/tag/v2.41).
+* [How to upgrade to v2.41](03-Releases/v2.41).
+* [How to upgrade to v2.4](03-Releases/v2.4) (if you upgrade from v2.31 or older, do this first).
 
 ## 4. The "Backbone": Configuration-Driven Architecture
 
